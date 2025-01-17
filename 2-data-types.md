@@ -207,7 +207,32 @@ Note: You could store the val as numeric and then cast it to money, if you need 
 the value using money data type.
 
 ## 10.-NaNs-and-infinity
+numeric and floats have `NaN` and `Infinity`, but integers don't have them, so you can't cast nan to an integer type.
+```postgresql
+select 'NaN'::int4; -- doesn't work
+select 'NaN'::numeric;
+select 'NaN'::float4;
+
+select 'Infinity'::float4;
+
+select 'Infinity'::numeric(10); -- doesn't work
+select 'Infinity'::numeric(10, 2); -- doesn't work
+```
+
+Why ints don't have Infinity? Because by definition integers are bounded but Infinity is unbounded.
+
+- An open-ended numeric can store infinity, but a closed numeric doesn't.
+- 'inf' can be used instead of 'Infinity'. 
+- All `NaN`s and `inf`s are equal to other `NaN`s and `inf`s.
+- `NaN`s are greater than all numbers.
+- `'inf'::numeric + 'inf'::numeric` is `inf`, but `'inf'::numeric - 'inf'::numeric` is `NaN`.
+- `select 'NaN'::numeric ^ 0` => 1 . But `select Nan::numeric + 1` => Nan
+
+NaN exists(can be stored) only in unbounded cols which are numeric without precision and scale. So they can't be stored in int and float cols.
+
 ## 11.-Casting-types
+
+
 ## 12.-Characters-types
 ## 13.-Check-constraints
 ## 14.-Domain-types
