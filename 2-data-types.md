@@ -72,6 +72,8 @@ For those, default to bigint(int8). It can also be used for sth like `file_size_
 - if you pass negative as scale, like: select 1234567.345::numeric(5, -2). It will round it from decimal place to 2 places in.
 - the precision, represents number of significant un-rounded digits.
 
+Note: numeric is a varying size datatype like varchar and text, unlike integers and floats. Since it allows any number, the num of required bytes does change.
+
 numeric(<precision>, <scale>): the total number of digits is called **precision**. allowed number of digits after fraction point is **scale**.
 ```postgresql
 -- we can represent 12.345 as numeric(5, 3) without losing precision
@@ -231,9 +233,55 @@ Why ints don't have Infinity? Because by definition integers are bounded but Inf
 NaN exists(can be stored) only in unbounded cols which are numeric without precision and scale. So they can't be stored in int and float cols.
 
 ## 11.-Casting-types
+Postgres impl of generic sql cast():
+```postgresql
+-- generic sql
+select cast(100 as money);
 
+ -- psql
+select 100::money;
+
+-- but how do we make sure that both casts produce the same output and are equal?
+select pg_typeof(cast(100 as money)), pg_typeof(100::money);
+```
+If you need portability between sql impls, use `cast()`, but if you're just using postgres, use double colon.
+
+Note: You shouldn't nerf your implementation because you might change your sql flavor in the future.
+
+If you're writing a lib that could be used by people that use different sql flavors, then stick as closely to sql standard as possible,
+or write drivers that leverage the power of each individual DB(flavor).
+
+### Decorated literal
+It's similar to cast() but not exactly the same.
+
+```postgresql
+-- here, `integer` is the decoration and '100' is the literal
+select int8 '100';
+```
+
+### how much space a val occupies?
+Note: `pg_column_size()`: tells how many bytes a certain thing occupies.
+```postgresql
+select pg_column_size(100::int2);
+```
+Pick the smallest column type that can hold the data because if a fixed value like 100 is stored in different col sizes, they occupy much more
+space than storing it in smaller col type. Like storing 100 in int2 vs int4 vs int8.
+
+For integers: even though the value itself is small(100), the size is determined by the col type. But for numerics,
+the value affects the size.
+
+So:
+```postgresql
+-- these two occupy the same space, 4 bytes:
+select pg_column_size(100::int4), pg_column_size(100000::int4);
+
+-- but these occupy different num of bytes(8, 12):
+select pg_column_size(100::numeric), pg_column_size(100000.123::numeric);
+```
 
 ## 12.-Characters-types
+
+
 ## 13.-Check-constraints
 ## 14.-Domain-types
 ## 15.-Charsets-and-collations
