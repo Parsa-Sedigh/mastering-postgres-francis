@@ -280,7 +280,44 @@ select pg_column_size(100::numeric), pg_column_size(100000.123::numeric);
 ```
 
 ## 12.-Characters-types
+3 different types for character data
+- `char(n) - character(n)`: fixed-length character type
+- `varchar - character varying`: character varying type. It accepts vals up to n chars. If you don't pass the argument, it will
+effectively be a `text`. So `varchar` without arg is `text`.
+- `text`: unbounded char col
 
+These 3 types are identical! They're the exact same thing! Under the hood they're stored in the exact same data structure.
+So using the very compact fixed-length character type is no more performant than using a character varying or text type.
+In fact, fixed-length character type might be the worst performing of the three types!
+
+Note: If you insert a val that has fewer than n chars to a char(n) col, it gets padded with spaces(at the end). If val has more chars,
+it throws an err.
+
+**Do not use fixed-length character type(char(5)) type!** 
+
+Drawbacks:
+- it doesn't actually enforce the n char long, because in case the val is shorter it just padds it to be 5 chars. If the val MUST be exactly n chars,
+you're toast, since we can insert vals with less chars.
+- since under the hood, the storage of these types are all the same, you don't get any performance benefit from using a fixed-len char col.
+It doesn't save any storage, so you get a bit of storage hit because it's storing all of those spaces in case the val is shorter and 
+a bit of performance hit because quite often, it has to trim off those spaces back to give you the actual val.
+- when comparing the vals of this type, the significance of white spaces depends(whether it's considered) on the collation, sometimes it depends on the
+operator(LIKE, =, ...). For example, for `LIKE` op, the whitespaces are significant. But for eq op, they're insignificant. Just don't use this type!
+
+We will see the correct way to enforce a 5 char limit, with correct approach, instead of using char(5).
+
+Note:
+- We can use unbounded char col with some check constraints.
+- varchar(without arg) and text can hold arbitarry large texts.
+- after the text(or varchar without arg) reaches a certain size, postgres has neat impl called `TOAST`(table of oversized attribute storage)
+which takes large chunk of text and splits it out into a different table such that your **rows** on disk can still be compact and you can still
+reach that oversized attr if you want. MySQL has the same thing. This is invisible to users. So don't put that large text col into another table
+to avoid having a large row because it won't be large, postgres does this automatically.
+
+Order of preference:
+1. text
+2. varchar
+3. char(don't use this) - this type is different in other DBs
 
 ## 13.-Check-constraints
 ## 14.-Domain-types
