@@ -311,7 +311,7 @@ Note:
 - varchar(without arg) and text can hold arbitarry large texts.
 - after the text(or varchar without arg) reaches a certain size, postgres has neat impl called `TOAST`(table of oversized attribute storage)
 which takes large chunk of text and splits it out into a different table such that your **rows** on disk can still be compact and you can still
-reach that oversized attr if you want. MySQL has the same thing. This is invisible to users. So don't put that large text col into another table
+reach that oversized attr if you want. MySQL has the same thing. This is invisible to usergs. So don't put that large text col into another table
 to avoid having a large row because it won't be large, postgres does this automatically.
 
 Order of preference:
@@ -320,6 +320,71 @@ Order of preference:
 3. char(don't use this) - this type is different in other DBs
 
 ## 13.-Check-constraints
+- For example, we don't have a number data type only for positive vals in postgres. In other DBs, we can declare a col as UNSIGNED INT and
+we get the entire bytes for positive nums, but not in postgres.
+- And don't use fixed-width char col, instead use a check constraint.
+
+The easiest way of data integrity(business or domain logic) writing validations, so that bad data can't get in. This is an example of
+**col constraints**:
+```postgresql 
+create table check_example(
+    -- we have a col constraint here
+    price numeric check ( price > 0 ), -- should be > 0
+    abbr text -- should be exactly 5 chars
+);
+```
+
+```postgresql
+create table check_example (
+  price numeric
+    constraint price_must_be_positive check ( price > 0 ), 
+  abbr text check ( length(abbr) = 5)                     
+);
+
+insert into check_example(price, abbr) VALUES (1, 'foo');
+```
+
+**Col constraints sit next to the col's data type and they reference a single col.** It's a best practice if you're gonna 
+reference multiple cols to move it down to a table constraint.
+
+Every col constraint can be written as a table constraint but not every table constraint can be written as a col constraint.
+So if you have a check constraint that references more than one col, write it as a table constraint. 
+```postgresql
+create table check_example (
+  price numeric
+    constraint price_must_be_positive check ( price > 0 ),
+  discount_price numeric,
+  abbr text,
+  
+  -- table constraints
+  check ( length(abbr) = 5 ),
+  
+  -- this still can be written as col constraint but it's a bad practice
+  check ( price > check_example.discount_price )
+);
+```
+
+Q: Check constraints are great but how much of business logic you should put into the DB?
+
+A: When it comes to enforcing data integrity, put it into the DB. There's difference between business logic integrity and data integrity.
+For example price > 0 or len(abbr) = 5, are data integrity. Do not put complex triggers in DB to do business logic.
+So you can put data integirty in DB layer instead of app layer. Especially if not all of your data updating and inserting goes through the app,
+then you need these checks in db.
+
+Note:
+- Check constraints can't reference other tables or another row besides the one that's being updated or inserted.
+- if you wanna change the check constraint, you do have to drop and recreate it, you can't just alter it(though you can alter it only for
+changing name, but not to change the logic). Note that you can do drop and recreate in a single statement such that you don't have race condition
+where someone else can put some bad data in there.
+
 ## 14.-Domain-types
+
+
 ## 15.-Charsets-and-collations
 ## 16.-Binary-data
+17.-UUIDs
+18.-Boolean
+19.-Enums
+20.-Timestamps
+21.-Timezones
+22.-Dates-and-times
