@@ -492,8 +492,94 @@ For most of the use cases,` UTF-8` encoding(charset) and e`n_US.UTF-8` collation
 for a different lang than English. You might change collation to French or ... .
 
 ## 16.-Binary-data
+You can store up to 1GB of data in binary col of a row. But it's not good. Remember that when you store large amounts of data,
+it gets `TOAST`ed. Where db automatically holds a pointer in the row itself and breaks the data out into the TOAST table.
+So the rows still will be compact. If your data is large, use file storage like s3 and leave a pointer like filename or url in the db.
 
-17.-UUIDs
+One of good things about storing very small files in the db, is we get strong consistency guarantees, whereas you might 
+delete the file off of s3 and the pointer to it is left dangling(we lost consistency).
+
+Storing files is not good overall. Better use cases for storing raw data is for example **storing checksums**. Storing them in db, 
+makes it fast to compare. Because you don't care about encoding and collation and ... , since you're literally just checking bytes! So no need
+to see the encoding for convert the chars into bytes, we already have the bytes.
+
+```postgresql
+create table bytea_example
+(
+    file_name text,
+    data      bytea -- bytea is variable-length binary type
+);
+
+insert into bytea_example (file_name, data) values ('hello.txt', '\x486...'); -- \x represents hex data 
+
+-- this is how you can control what bytea output the client gives back to you. The default is `hex` and it's the one you should be using.
+show bytea_output; -- result: hex
+
+-- there's an older version for bytea_output that you can use which can be nice when you're a human! Because it will convert the bytea output
+-- to characters. But remember not all bytes(bytea) can be converted to chars! You may have stored raw bytes there that weren't originally characters!
+-- So escape can't convert them to characters. In other words, it's gonna muck those up.
+set bytea_output = 'escape';
+```
+
+**Stick to hex.**
+
+### Storing Digests
+```postgresql
+select md5('hello world');
+```
+
+**md5 is not secure** Do not use it for sensitive data. Though it's superfast for digests and hashes where you need strict equality across a potentially
+big piece of data that you can compress down using md5() and then doing strict equality lookups.
+
+Note that **even** using md5 as a hashing func, you could potentially get dinged on a security audit, in that case, you need to switch to
+sth like sha256.
+
+---
+
+```postgresql
+select pg_typeof(md5('hello world')); -- text
+select pg_typeof(decode(md5('hello world'), 'hex'));-- bytea
+
+select pg_typeof(sha256('hello world')); -- bytea
+```
+This is a quirk. md5() returns text but sha256() returns bytea. If you wanted to make md5() as bytea, you use `decode()`.
+
+Q: Why we care about making the results of these funcs as `bytea` and not chars using `text` type?
+
+A: Because we don't care about reading those vals as texts, we just want to do strict equality comparison between two hashes.
+So we convert them to bytes, to make them compact and faster.
+
+Q: Why it's 20 bytes? I though md5 produces 16bytes!
+```postgresql
+select pg_column_size(decode(md5('hello world'), 'hex')); -- 20
+```
+
+A: Because there's a bit of bytea overhead.
+
+Now if you compare the text format of a str and it's decoded(bytea) format, the bytea is more compact. Because we got rid of character info and
+we just go down to straight bytes, so that's good:
+```postgresql
+select pg_column_size(md5('hello world')), pg_column_size(decode(md5('hello world'), 'hex')); -- 36, 20
+```
+
+Note: A great way to do strict equality lookups is hashing them and store their hash as potentially a generated col, then call decode()
+to store it as bytes, not text, so it's more compact. But there's a simpler way:
+```postgresql
+select md5('hello world')::uuid, md5('hello world'); -- uuid has some dashes
+
+select pg_column_size(md5('hello world')), -- 36
+       pg_column_size(decode(md5('hello world'), 'hex')), -- 20
+       pg_column_size(md5('hello world')::uuid); -- 16.
+```
+WOW!!!! uuid is more compact than text and bytea!!!!!!!!!
+
+So **uuid is smallest possible representation of an md5 hash.**
+
+**So for storing digest(hash), use uuid as the col type of the hashes value.**
+
+## 17.-UUIDs
+
+
 18.-Boolean
 19.-Enums
 20.-Timestamps
