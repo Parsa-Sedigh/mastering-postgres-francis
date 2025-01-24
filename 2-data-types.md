@@ -378,10 +378,121 @@ changing name, but not to change the logic). Note that you can do drop and recre
 where someone else can put some bad data in there.
 
 ## 14.-Domain-types
+In check constraints, the declaration was: `<col name> <datatype> <check constraint>`. 
 
+A domain wraps up the `<datatype>` and the `<check constraint>` into one custom name. So it's kinda like a custom type except
+it relies on an underlying type and it's a combination of a type and some constraints.
+
+```postgresql
+-- in US, you can have a postal code that's <5 chars> long or this format: <5 chars>-<4 chars>. It can have a leading zero too like:
+-- 05345-2341. So you don't want to declare postal_code as numeric or int, because you might lose that leading 0 and also it wouldn't
+-- support the dash.
+-- NOTE: We can use check constraint here as well.
+
+create domain us_postal_code as text constraint format check ( 
+    -- value must match the given regex
+    -- NOTE: Here, we're referring to the actual value with `VALUE` not the col.
+    VALUE ~ '^\d{5}$' or VALUE ~ '^\d{5}-\d{4}$'
+);
+
+create table domain_example (
+    street text not null,
+    city   text not null,
+    postal us_postal_code not null
+);
+
+insert into domain_example(street, city, postal) VALUES ('main', 'dallas', '7432'); -- fails
+insert into domain_example(street, city, postal) VALUES ('main', 'dallas', '74320-09a9'); -- fails
+```
+
+With domains, we can use them across multiple tables unlike the check constraints.
+
+Note:
+- With domains, you're not creating a custom data type, you've just wrapped up a regular datatype and a constraint.
+- In domains, we can't reference multiple cols but in check constraints, we can(table check constraints).
+- We can alter a domain, but we can only alter the name of a check constraint(we have to drop and recreate it for other changes).
+- When altering domains, we can say to validate the constraint only against new rows not the old ones. So that might be a good way
+to gradually roll out a new constraint. So we can leave the old data there until we can update the data to be valid and then, we can
+again alter the domain and enforce the new rules once all of our our data is clean.
+
+So with domains, we can reuse them. So if we have price, age, birthday or postal code, or god forbid validating email addresses with
+regex(don't do that), we can reuse the domains across multiple tables that have those cols, to keep the logic consistent, whereas with
+check constraints, we have to update them in all the places, since we can't share them.
 
 ## 15.-Charsets-and-collations
+Charsets and collations of our text content.
+
+You should be fine with defaults.
+
+### What is a character set(or an encoding) and what is a collation?
+Is how we go from a character on the screen to the bytes written on the disk. UTF-8 is multi-byte encoding, between 1 to 4 bytes.
+So it supports accented characters, foreign lang chars and ...(supports the entire range of unicode and emojis).
+
+`UTF8` is extremely versatile and it can store anything and you won't end up with those weird question mark boxes when you try to display
+some special char.
+
+Charset defines what legal characters are and it might define the entire chars in unicode. So if you're using a different encoding(charset) and
+you try to insert sth with an accented char or foreign language char or emoji, you might get an err. Because it's not representable in
+that encoding.
+
+### Collation
+Like `en_US.UTF-8`.
+
+A Collation is a set of rules that defines how those characters relate to each other.
+
+For example, you might be comparing `a` with `A`, or e with è. Or those the same thing? Well it depends on the collation.
+
+When you run `\l` in psql, it shows the **server's** encoding. It lists the info such as the encoding of each DB on the DB.
+Your client with which you're connecting to postgres, also has an encoding. We can see it in psql client by:
+```shell
+show client_encoding;
+```
+
+If you change your `client_encoding`, postgres will attempt to convert the server-encoded data to your client encoding, but that's not always
+possible, because the overlap of encodings is not a perfect circle(encodings don't overlap always). There are some chars that can be
+represented in one encoding but can't be represented in another encoding. If client_encoding and server's encoding is different, you need to
+convert some of the chars yourself. 
+```postgresql
+select 'abc' = 'ABC' collate "en_US.UTF-8" as result; -- false
+```
+
+Note: en_US.UTF-8 collation is case-sensitive.
+
+### creating a collation
+We can create our own collation. Why? For example, we wanna search a col for an email and the input str lowercase. There are maybe potentially
+better ways to do that, than creating your own collation. Some solutions:
+- downcasing the input
+- if prev solutions is not viable, we can create a generated col that is downcased
+- or create a functional index that uses lowercase email
+
+```postgresql
+create collation en_us_ci (
+    provider = icu,
+    locale = 'en-US-u-ks-level1',
+    deterministic = false
+  );
+
+select 'abc' = 'ABC' collate "en_us_ci" as result; -- true!!!
+```
+
+- icu stands for international components for unicode. Your postgres hopefully will be built with this, if not, then you can't use `icu` provider.
+Though it's pretty standard, so you should have it.
+- `level1` is the least sensitive level.
+- deterministic = false because when you have things that are case-insensitive and accent-insensitive, it's possible those could end up
+in any order, because the comparison could be totally equal.
+
+Note: If you're just creating a collation for case-insensitive searching, you have these opts:
+- the `ILIKE` operator which can be good or bad. Why bad? Because it may not be as index-assisted as we want.
+- We also have generated cols
+- functional indexes
+
+Note: You can create a specific text col with it's own encoding or collation, if that meets your use case.
+
+For most of the use cases,` UTF-8` encoding(charset) and e`n_US.UTF-8` collation are fine. But you might need other ones if you're building an app
+for a different lang than English. You might change collation to French or ... .
+
 ## 16.-Binary-data
+
 17.-UUIDs
 18.-Boolean
 19.-Enums
