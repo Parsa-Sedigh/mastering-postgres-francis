@@ -578,10 +578,54 @@ So **uuid is smallest possible representation of an md5 hash.**
 **So for storing digest(hash), use uuid as the col type of the hashes value.**
 
 ## 17.-UUIDs
+We're gonna talk about UUIDs as a datatype not as primary key. We will talk about that later.
+
+If you don't care about `bigint`s vs UUIDs as primary key, use `bigint`. The reason has to do with fracturing the btrees.
+
+The claim of uuid(universally unique identifier) being universally unique is strong! In fact, it's a fair claim because
+you're more likely to get hit by lightning 40 times than have a uuid collision.
+
+UUIDs are useful for generating ids without coordination. That could be in separate systems(like separate companies), a distributed systems maybe
+on different machines, or generating them on the client(maybe you're doing optimistic UI and we need to generate an id on client).
+
+The type of uuid is not string(varchar or text), it's uuid.
+
+Note: uuid col is 16 bytes.
+
+Why postgres uuid type is the perfect type for uuid values? Because it's more compact and faster to operate than
+other data types that can hold uuid vals, like
+`text` or `varchar`.
+```postgresql
+create table uuid_example
+(
+  uuid_value uuid
+);
+
+select pg_column_size(uuid_value::text), pg_column_size(uuid_value)
+from uuid_example; -- 40, 16
+```
+Why storing uuid in text would make 40bytes? Because it's 36bytes of string and 4bytes of overhead.
+
+The only type of uuid that postgres can generate out of the box(without extension) is random uuid:
+```postgresql
+select gen_random_uuid();
+```
+
+At this moment, there are 8 versions of uuid and they don't supersede each other, they are simply different versions.
+
+Each segment between dashes in an uuid, is representative of some type of data, whether it's a timestamp, random bits, machines,
+entropy or ... . So each segment(piece) has it's own kind of domain that it's responsible for and the different versions of uuid, all do it
+a bit differently.
+
+The good thing about uuid v7 which is not in postgres by default(you need to install it's extension), is the first part(segment) is a
+representation of timestamp. It's lexographically sorted. You could extract the timestamp out of the UUID.
+
+**UUID v7 could make a good primary key. However, `gen_random_uuid()` would make a terrible primary key.**
+
+## 18.-Boolean
 
 
-18.-Boolean
-19.-Enums
-20.-Timestamps
-21.-Timezones
-22.-Dates-and-times
+## 19.-Enums
+## 20.-Timestamps
+## 21.-Timezones
+## 22.-Dates-and-times
