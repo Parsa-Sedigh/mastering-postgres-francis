@@ -623,9 +623,54 @@ representation of timestamp. It's lexographically sorted. You could extract the 
 **UUID v7 could make a good primary key. However, `gen_random_uuid()` would make a terrible primary key.**
 
 ## 18.-Boolean
+Some other dbs have a boolean type that's an alias to satisfy the SQL standard and under the hood they just use a tinyint. But this isn't true in
+postgres. Postgres has a datatype for everything including boolean.
 
+We have 3 states: true, false, null(unknown)
+
+```postgresql
+create table boolean_example
+(
+  id     serial primary key,
+  status boolean
+);
+
+insert into boolean_example(status)
+values (TRUE),
+       (FALSE),
+       ('t'),     -- TRUE
+       ('f'),     -- FALSE
+       ('true'),  -- TRUE
+       ('false'), -- FALSE
+       ('1'),     -- TRUE (Note: must be quoted can't be an integer)
+       ('0'),     -- FALSE (Note: must be quoted can't be an integer)
+       ('on'),    -- TRUE
+       ('off'),   -- FALSE
+       ('yes'),   -- TRUE
+       ('no'),    -- FALSE
+       (NULL); -- NULL essentially means 'unknown';
+
+
+select '1'::boolean;
+
+select 1::boolean; -- you can cast the 1 (int) to boolean
+
+insert into boolean_example (status)
+values (1); -- but you can't insert the 1 (int) into the table
+
+select pg_column_size(1::boolean), pg_column_size(1::integer); -- 1, 4
+```
+
+A `boolean` type in postgres is **1 byte**. It's very compact. So for boolean values, don't use int2, use boolean. Because int2 supports up to 32767.
+
+It's better to use TRUE and FALSE, instead of t or f or ..., because they are bool already, so no need to coerce them.
+
+### When not to use bool
+If you have more than 0,1, null or you're doing bitwise operations, there's a better type for that.
 
 ## 19.-Enums
+
+
 ## 20.-Timestamps
 ## 21.-Timezones
 ## 22.-Dates-and-times
