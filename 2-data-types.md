@@ -669,7 +669,114 @@ It's better to use TRUE and FALSE, instead of t or f or ..., because they are bo
 If you have more than 0,1, null or you're doing bitwise operations, there's a better type for that.
 
 ## 19.-Enums
+### When NOT to use
+- If the possible opts are changing, do not use an enum.
+- if the states have other info as well. In that case, just make it it's own table and add foreign key
 
+Note: Sometimes a check constraint is better than enum.
+
+**Note: Be aware of sorting of enums quirk!**(not a real quirk though)
+
+```postgresql
+create type mood as enum('happy', 'sad', 'neutral'); 
+
+create table enum_example (
+    current_mood mood
+);
+```
+
+Note: Ordering based on an enum col is not alphabetically, it's ordered by the order that you **declared** the values of enum.
+This characteristic can be useful when your enum is like:
+- x-small
+- small
+- medium
+- large
+- x-large
+
+This ordering makes sense than having them alphabetically when ordered. This is not a quirk, it's just how it works.
+
+### adding val to enum
+```postgresql
+alter type mood add value 'excited'; -- now when we order by mood, excited rows will appear last
+
+alter type mood add value 'excited' before 'sad';
+```
+
+### Altering enums
+Removing a val from an enum is not possible, so you have to drop it and create a new one:
+```postgresql
+create type mood_new as enum ('happy', 'sad');
+
+alter table enum_example
+    alter column current_mood type mood_new
+        using current_mood::text::mood_new; -- ERROR: invalid input value for enum mood_new: "excited"
+```
+This is because some rows have value "excited" which is not in mood_new enum, so we can't cast that col to mood_new, since it has unexpected values.
+We need to get rid of the values that are not supported in the new enum that we wanna change the type to.
+
+Workaround:
+```postgresql
+begin;
+
+update enum_example
+set current_mood = 'neutral'
+where current_mood not in ('happy', 'sad');
+
+alter table enum_example
+  alter column current_mood type mood_new
+    using current_mood::text::mood_new;
+
+commit;
+
+-- now you can safely drop the old enum and if you want, rename the new enum type to `mood` not `mood_new`.
+```
+
+### Under the hood of enums
+We know enums are stored as ints, but we can't cast them to ints easily:
+```postgresql
+select current_mood::int4 from enum_example; -- non of the ints work
+```
+
+```postgresql
+select * from pg_catalog.pg_enum;
+```
+This query returns custom enums and their `enumtypid` which is the id of our declared enum type, for example `mood` enum gets id of 16667.
+
+Look at how pg handles inserting before and after vals in an enum. It splits the difference of `enumsortorder`. This `enumsortorder` col is the one
+used in sorting of an enum col.
+![](./img/19-1.png)
+
+So when we sort by an enum col, the actual query would be sth like:
+```postgresql
+select *
+from pg_catalog.pg_enum
+where enumtypid = 16667
+order by enumsortorder;
+```
+
+Note: If you forget the vals and their order in enum currently, you can run:
+```postgresql
+-- mood: {happy,afraid,melancholic,sad,neutral,excited}
+
+select enum_range(null::mood);
+
+-- this will output the vals up until 'sad' in enum
+select enum_range(null::mood, 'sad'::mood); -- {happy,afraid,melancholic,sad}
+
+-- what are the vals in range of 'afraid' till 'sad':
+select enum_range('afraid'::mood, 'sad'::mood); -- {afraid,melancholic,sad}
+```
+This func is useful if your enums have semantic meaning and you declared them in the right order.
+
+You can use check constraints instead of enums. If you use check constraint on a string col, you lose that compact storage of enums under the hood,
+since you're gonna be storing strings not ints. But check constraints are easier to alter.
+
+**If the vals are constantly being added and removed in terms of what are the legal vals, you can use a text col with check constraint or domain.
+But if the list of vals are fixed, you can use an enum.**
+
+Note: If you're not in the habit of looking at your data in a view amd you're only working with data on the application code, it's ok to
+make that status col an int instead of an enum. But we would have 1, 2, 3, 4 ... as vals instead of nice representations of enum.
+So without looking at the application code, we don't know the meaning of vals in rows.
 
 ## 20.-Timestamps
 ## 21.-Timezones
