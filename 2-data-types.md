@@ -988,3 +988,60 @@ use named timezone identifier, you're gonna be OK.
 If a database tz is set to America/Chicago, it will automatically switch between CST (UTC-6) and CDT (UTC-5) depending on the time of the year.
 
 ## 22.-Dates-and-times
+If you wanna store date and time separately, use date and time types(for example birthdate). Note that if you wanna store a date and a time, don't store them separately,
+keep them together using timestamptz col.
+
+Note: If you're storing a discrete point in time in the physical universe, use a datetime(timestamp) col which keeps date & time together.
+
+Note: Don't use `timetz(time with time zone)`. It makes literal sense! In pg docs it says that that was implemented strictly for compliance with the SQL standard and
+they don't recommend using it. Because a time in a timezone is totally ambiguous and pointless without a date. 5pm in America/Chicago,
+that could be in or out of daylight saving time. So a time outside of a date doesn't have a timezone.
+
+For example:
+```postgresql
+SELECT '08:00:00 UTC'::time with time zone AT TIME ZONE 'America/New_York';
+```
+Is this time 8 AM in New York in `EST` or `EDT`? Since there’s no associated date to determine the daylight time,
+it’s unclear whether DST (Daylight Saving Time) applies. Note that date can determine the daylight time, because in specific days of year,
+a region uses EST and in some other days, it uses EDT, so we need the date to determine the daylight time. But we don't have that
+in `timetz`.
+
+Note: By default `time` is `time without time zone`.
+
+---
+
+`date` doesn't have any options to configure. But `time` has a few ones. It has the same precision tools as the timestamp which is we can pass
+0-6 digits for fractional seconds to it.
+
+```postgresql
+select '12:01:05.1234'::time; -- 12:01:05.1234 . Since time can preserve 6 fractional digits
+
+select '12:01:05.1234'::time(0); -- 12:01:05
+
+-- ------ Note: Using magic strings are not recommend ------
+  
+-- there are some fun string literals for time. For example 'allballs' means all zeroes
+select 'allballs'::time; -- 00:00:00
+
+select 'epoch'::time; -- ERROR. Since epoch is a point in time not just a time(it has date)
+select 'epoch'::timestamp; -- 1970:01-01 00:00:00
+
+select 'tomorrow'::date; -- or cast it to timestamp. This magic string is not recommend, use: select CURRENT_DATE + 1
+select 'yesterday'::date;
+select 'infinity'::date;
+
+-- tomorrow. Use these in a func or stored procedure, trigger
+select CURRENT_DATE + 1;
+
+-- yesterday
+select CURRENT_DATE - 1;
+
+-- don't use CURRENT_TIME constant because it gives you `timetz` which is not recommended
+select pg_typeof(current_time), current_time; -- time with time zone, 14:40:35.560725+00
+
+select pg_typeof(localtime), localtime; -- gives you `time without time zone` in our timezone.
+
+select localtimestamp; -- gives timestamp without time zone
+```
+
+So most of the constants are fine except `current_time` which returns timetz.
