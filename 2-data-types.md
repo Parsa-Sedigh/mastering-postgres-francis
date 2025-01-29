@@ -779,5 +779,212 @@ make that status col an int instead of an enum. But we would have 1, 2, 3, 4 ...
 So without looking at the application code, we don't know the meaning of vals in rows.
 
 ## 20.-Timestamps
+Timestamp is a date and time together. In postgres, datetime is called timestamp. There are two options to store datetime in pg:
+- timestamp without timezone: pg doesn't any conversions
+- timestamp with timezone(timestamptz): pg takes the val that you give it, convert it to UTC to store it in db and then when you read the val(pull it back),
+it's gonna convert it to whatever timezone you are in
+
+So when a val comes in for a `timestamptz` col, pg is gonna convert that val to UTC to storage and then when reading it, it will convert it back
+to whatever timezone of the session is. So the conversion happens if the db or session tz is not set to UTC.
+
+- These both support the same range and same number of bytes for storage.
+- **ALWAYS** use timestamp **with** timezone.
+- It's not useful to store a time separately, however a separate date col could be useful.
+- when you choose `timestamp` as a col type, it's without timezone by default
+
+```postgresql
+create table timestamp_example (
+    "id" serial primary key,
+    "timestamp" timestamp
+);
+```
+
+### args to timestamp() and in future datetime behavior
+You can pass 0 to 6 to timestamp() or timestamptz() and it specifies how many fractional seconds you want to store.
+If you don't pass it anything, it will use the literal and won't have truncation of fractional digits.
+
+```postgresql
+select now()::timestamptz(3); -- 2025-01-28 08:26:13.569 +00:00 . So we have 3 fractional digits: 569
+
+select now()::timestamptz(1), now()::timestamptz(0), now()::timestamptz; -- 2025-01-28 09:29:03.8 +00:00, 2025-01-28 09:29:04 +00:00, 2025-01-28 09:29:03.832300 +00:00
+```
+In the second query, as you can see the one with `0` as arg, **is in future** at the time we ran the query! Because it's second is 04, but the other two are 03.
+Why? Because it was rounded up to truncate fractional digits.
+
+If you don't want this rounding up to future behavior and don't want the fractional digits, instead of casting to timestamptz(0), you can use `date_trunc()`.
+With this func, we won't get the datetime in the future.
+```postgresql
+select now()::timestamptz(0), date_trunc('second', now()); -- 2025-01-28 09:41:28 +00:00, 2025-01-28 09:41:27.000000 +00:00
+```
+
+Pg is very forgiving on the formats for dates. But we don't like this behavior. We don't like leaving it to pg to figure out what this datetime means.
+**We want to always communicate in ISO8601.**
+
+### ISO8601
+- `year-month-day hour:minute:second:<potentially fractional second>.<potentially timezone>`
+- `2024-01-31 11:30:08.234+<04:00>` or could be written like: `2024-01-31T11:30:08.234` or `2024-01-31 11:30:08.234Z`. There's also a timezone
+that has 30minutes offset off UTC, so the timestamp in that tz would be like: `2024-01-31 11:30:08-00:30`
+- Z stands for zulu which is +00
+
+ISO8601 is not ambiguous, but we have some ambiguous formats like: 1/3/2024 or 3/1/2024. **What do these dates refer to? Well, it depends
+on where you are in the world!** If you're in USA, first one means Jan 3rd and second is March 1st. If you're literally anywhere else
+in the world, first one is March 1st and second is Jan 3rd. So it's ambiguous.
+
+This is how we control how pg interprets ambiguous dates. But not that you shouldn't give pg ambiguous dates in the first place.
+```postgresql
+-- we have two settings! the first part determines the output. The second part determines the ambiguous date format.
+show datestyle; -- ISO, DMY
+```
+
+**So when we have 1/3/2024, pg says: well that is ambiguous, but I can use second part of datestyle(which in our case is DMY).**
+So day is 1, month is 3.
+
+We can change that setting:
+```postgresql
+set datestyle = 'ISO, MDY';
+```
+Now, 1/3/2024 is interpreted as 2024-1-3. So month is 1, day is 3. 
+
+**Note: 1/3/2024 is ambiguous. but the 2024-1-3 is not.**
+
+### Other date formats
+There's also the SQL output format. It's in fact not in SQL standard. This is a lucky or unlucky coincidence of naming.
+```postgresql
+set datestyle = 'SQL, DMY';
+
+select '2024-01-31'::date; -- 31/01/2024
+```
+
+For some reason, Germans have their own date style in pg:
+```postgresql
+set datestyle = 'German, DMY';
+
+select '2024-01-31'::date; -- 31.01.2024
+```
+
+Another format which covers both output format and ambiguous output format:
+```postgresql
+set datestyle = 'European';
+
+select '2024-01-31'::date; -- 31.01.2024
+```
+
+Always use ISO8601 so that there's no ambiguity and you're not relying on datestyle server setting. 
+
+### unix timestamps
+They're just numbers(int or floats if there are fraction of second). To convert them to timestamptz, use `to_timestamp()`.
+```postgresql
+select to_timestamp(<unix timestamp>); -- returns a timestamp like: 2023-09-15 09:41:28 +00:00
+
+select pg_typeof(to_timestamp(<unix timestamp>)); -- `timestamp with time zone` and it's timezone is UTC
+```
+
+Unix timestamp always have +00:00 as timezone offset. Why? Because a **unix timestamp is an offset from the EPOCH at UTC.**
+
 ## 21.-Timezones
+- Keep it in UTC for as long as possible. Convert it to whatever the user needs at the latest moment possible.
+- use named timezones not offsets
+
+Keeping everything in UTC is a matter of making sure that your timezones are set to UTC.
+
+You can set the timezone per session in 1) the CLI or 2) in psqlrc file. So when we set it in session, if we disconnect and reconnect,
+it would reset to the db or cluster timezone. To set it in CLI:
+```postgresql
+show time zone; -- UTC
+
+set time zone 'America/Chicago';
+```
+
+To change db timezone
+1.
+```postgresql
+-- 1
+alter database demo set time zone 'UTC';
+```
+2. To change cluster-level timezone:
+```postgresql
+show config_file; -- .../postgresql.conf
+```
+Note that you have to reload the conf file **and** if a db has delcared it's own discrete timezone, then the default postgresql.conf won't apply.
+The order of confs:
+1. postgres.conf 
+2. db conf 
+3. the session
+
+```postgresql
+select '2023-09-15 09:41:28'::timestamptz; -- 2023-09-15 09:41:28.000000 +00:00
+```
+The query shows tz of +00, it's because the tz of server is UTC(`show time zone`).
+
+If you pass a timestamp literal(value) that doesn't have a tz and cast it or store it to timestamptz or store, it's gonna pick the tz of server.
+
+```postgresql
+set time zone 'America/Chicago'; -- sets session tz
+
+select '2024-01-31 11:30:00'::timestamptz; -- 2024-01-31 11:30:00.000000 -06:00
+```
+Wow what happened?
+
+The timestamp we have in select, is in UTC but when it was cast, but the timezone of client session is Chicago, so it's gonna convert
+the val from Chicago to UTC, which means decreasing the hour by 6.
+
+But this is hardly ever what we want. Instead, most of the time, we(client session) want to get back UTC from pg db. So we shouldn't alter the
+client session tz and then maybe later in the app, we will change that.
+
+### caveat: use a named timezone
+1. it's gonna cover daylight saving time
+2. it's not gonna shoot you in the foot when you accidentally flip a sign
+
+Named timezones are better:
+```postgresql
+select '2024-01-31 11:30:00'::timestamptz as utc, -- 2024-01-31 11:30:00.000000 +00:00
+       '2024-01-31 11:30:00'::timestamptz at time zone 'America/Chicago' as amch, -- 2024-01-31 05:30:00.000000
+
+       -- we're using abbreviated tz here, you may have to specify daylight saving yourself
+       '2024-01-31 11:30:00'::timestamptz at time zone 'CST' as cst, -- 2024-01-31 05:30:00.000000 .
+       '2024-01-31 11:30:00'::timestamptz at time zone 'CDT' as cdt; -- 2024-01-31 06:30:00.000000
+```
+So we got a 6 hours difference.
+
+You can use hour offsets, but it could get wrong results!. 
+Like: `select '2024-01-31 11:30:00'::timestamptz at time zone '-06:00' as hour_offset; -- 2024-01-31 17:30:00.000000`.
+The result is clearly wrong. The correct answer is 2024-01-31 05:30:00.000000. But if we change the tz sign to `+` (+06:00),
+the result is correct. But we know the central timezone is -06:00. This is the problem of using hour offset.
+Using `interval` will also yield the correct result(with correct tz) somehow:
+```postgresql
+select '2024-01-31 11:30:00'::timestamptz at time zone interval '-06:00' as interval_offset; -- 2024-01-31 05:30:00.000000
+```
+
+When you specify a tz for a timestamp, it's type would be `timestamp without timezone`, so this op should be at the end of your
+pipeline where you're just displaying it out to the user - you're no longer doing date math on it.
+
+```postgresql
+select pg_typeof('2024-01-31 11:30:00'::timestamptz at time zone 'America/Chicago'); -- timestamp without timezone
+```
+
+Note: In full timezone name, the daylight saving time is implied, but in abbreviation form, you might handle it yourself. So full 
+timezone name is kinda better.
+
+There are 3 ways to specify timezones(the first approach is preferred):
+1. full name(implies daylight saving time)
+2. abbreviation (fine if you can't use full name)
+3. POSIX-style(bare offset). not preferable, but may be necessary if no suitable IANA tz entry is available. Note that offset sign is the opposite in this format.
+If for whatever reason you must use hour offset, use `interval` keyword.
+
+**Note:** The offset sign in POSIX-style of tz is the **opposite** of ISO8601 sign convention!!!! Meaning the positive sign is used for zones **west** of Greenwich.
+This is the reason why we used + sign for America/Chicago tz offset in prev examples. Although America/Chicago is west of Greenwich(used for UTC) and
+should have negative offset sign.
+
+To get a list of tz names:
+```postgresql
+select * from pg_timezone_names
+where name like '%Chicago';
+```
+
+You could be in daylight saving time(DST), but a date that you've been operating on, exist in central standard time(CST), but as long as you
+use named timezone identifier, you're gonna be OK.
+
+### CST and DST
+If a database tz is set to America/Chicago, it will automatically switch between CST (UTC-6) and CDT (UTC-5) depending on the time of the year.
+
 ## 22.-Dates-and-times
