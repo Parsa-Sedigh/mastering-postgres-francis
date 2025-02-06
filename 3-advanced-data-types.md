@@ -324,7 +324,72 @@ select '{
 You can use json unquoting operator (->>) to do that.
 
 ## 29.-Arrays
+**Postgres array is 1-based index. But an arr in json val is 0-based index.**
+
+When should you use arrays vs breaking the data into it's own **table**.
+
+- storing an arr of censor readings is ok. That necessarily need to be broken out into it's own table. Because perhaps those readings are
+always associated with censors at a **certain timestamp**, maybe doing it every minute. So you store the whole chunk of readings together.
+- removing the need for many-to-many tables: storing the tag ids together which removes the need for intermediate(linking) table. 
+But this causes issues as well like we don't have that referential integrity that we get by using foreign keys. 
+So if a tag gets deleted, that's not gonna necessarily delete that tag from the arr.
+
+```postgresql
+create table array_example
+(
+  id           bigint generated always as identity primary key,
+  int_array    integer[], -- or integer array
+  text_array   text[],
+  bool_array   boolean[],
+  nested_array integer[][]
+);
+
+insert into array_example(int_array, text_array, bool_array, nested_array)
+values (array [1, 2, 3, 4],
+        array ['marigold', 'daisy', 'poppy', 'sunflower'],
+        [true, false, true, false],
+        '{{1, 2, 3}}');
+```
+
+Array literal is specified with two formats:
+- `array [...]` . verbose mode
+- `{...}`. This is the standard output format when we do `select`
+
+```postgresql
+select id,
+       array_text[1],
+       array_text[1:3], -- slicing
+       array_text[1:10] -- even if there are less than 10 els, it won't throw err
+from array_example;
+```
+
+### Array includes operator
+Get rows that their text_array col include 'poppy'.
+```postgresql
+select id, text_array
+from array_example
+where text_array @> array ['poppy']; -- or @> '{poppy}'
+```
+
+### unnest
+Takes an arr and turns it into a result set and the items that are not arr, will be copied down into each row.
+So it takes us from the arr land back to SQL land.
+
+Result set means rows.
+
+```postgresql
+with flowers as (
+  select id, 
+         unnest(text_array) as flower
+  from array_example    
+)
+select * from flowers
+where flower = 'poppy';
+```
+
 ## 30.-Generated-columns
+
+
 ## 31.-Text-search-types
 ## 32.-Bit-string
 ## 33.-Ranges
