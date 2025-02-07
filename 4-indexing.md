@@ -64,6 +64,30 @@ If we didn't have index(secondary DS), we had to scan the entire table and it's 
 When we have a table that have small num of data, it might be faster to just scan the whole table than using index.
 
 ## 42.-Primary-keys-vs.-secondary-indexes
+In mysql, when you declare a primary key, you're simultaneously declaring the clustered index. And in mysql, the clustered index
+is the way that the data is arranged on the disk. So in mysql, everything is in index, including the table. The table itself is a btree index,
+where the entire rows are held down at leaf nodes.
+![](img/42-1.png)
+![](img/42-2.png)
+
+In mysql, a secondary index is any other index that's not the clustered index(but in pg, every index is secondary).
+So data on disk is sorted based on the primary key(the clustered index of the table).
+
+In pg, every index is a secondary index.
+
+In pg, the data on disk is stored in a heap - a big pile. Meaning there's no clustered index. Therefore, every index is a secondary index.
+Every index lookup requires traversing the index and then hopping over to the heap and finding the rows(that's mostly true because of
+covering indexes).
+
+So what's a primary key in pg?
+
+A primary key is a special type of secondary index which has more abilities:
+1. it enforces uniqueness
+2. not null
+3. automatically creates the underlying index for you. So you don't have to create the index for primary key yourself.
+
+Every table can have only one primary key.
+
 ## 43.-Primary-key-types
 ## 44.-Where-to-add-indexes
 ## 45.-Index-selectivity
