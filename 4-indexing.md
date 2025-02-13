@@ -130,10 +130,211 @@ Prefer bigint unless you have a good reason not to. If you're gonna use uuids, u
 If you're afraid of exposing auto-inc primary key, favor a secondary key like nanoid.
 
 ## 44.-Where-to-add-indexes
+You can look at the data for creating the schema. But we can't look at the data or schema and derive good indexes out of them.
+You must look at the access patterns(how are we gonna query the table) AND THEN, look at the data itself.
 
+Do not add an index on every col! Because an index is a separate DS that maintains a copy of part of your data(one or few cols).
+Now by adding index on every col:
+- we duplicated our data
+- writes(INSERT, UPDATE, DELETE) are gonna be slower, because all of those separate DSs need to be maintained
+- your reads perf are not gonna be as fast as you want because probably it's better to have one composite index over multiple cols
+instead of having multiple single indexes over single cols
+
+This is better than "adding index to every col", but not entirely correct: "anything that shows up after the `WHERE`, you should have
+an index on that".
+
+Not entirely correct, because: we should consider the entire query. Yes, the `WHERE` clause is important, also ORDER, GROUP, JOIN,
+SELECT, ... all of those things are important for designing effective indexing strategy.
+
+Note: Users table has 1M rows.
+
+We're prove 5 cases where btree index is used:
+- strict equality
+- unbounded range(there will be a index selectivity issue in one case)
+- bounded range
+- grouping
+- ordering
+
+Note: We won't look at indexes in `JOIN` yet.
+
+```postgresql
+explain select * from users where birthday = '1989-02-14';
+```
+
+```
+Gather (cost=1000.00..19845.77 rows=90 width=76)
+    Workers Planeed: 2
+    ->  Parallel Seq scan on users (cost=0.00..18836.77)
+            Filter: (birthday = '1989-02-14'::date)
+```
+
+Here, pg is doing a parallel scan and it dedicated 2 workers to this and each gets it's own pages, they go off and scan the table
+and then it will gather the results at the end(`Gather ...` line).
+
+`Seq scan` is not what you want to see.
+
+```postgresql
+create index bday on users using btree(birthday);
+```
+
+Then if we run the explain again:
+```
+Bitmap heap scan on users (cost=5.12..344.35 rows=90 width=76) -- 2) then goes to table to get the full rows 
+    Rechecked cond: (birthday = '1989-02-14'::date)
+    -> Bitmap index scan on bday (cost=0.00..5.10 rows=90 width=0) -- 1) is using our index
+            Index cond: (birthday = '1989-02-14'::date)
+```
+
+Note the `Bitmap index scan on bday`.
+
+So an index helps us with strict equality.
+
+Now change cond to use less than operator: `birthday < '1989-02-14'`, it will still use the bday index
+just the cost of Bitmap heap scan is higher(4683.62..23589.14).
+
+But if we change the cond to greater operator, it won't use the index!!!
+```
+Seq Scan on users (cost=0.00..26054.85 rows=571857 width=)
+    Filter: (birthday = '1989-02-14'::date)
+```
+
+Why? Let's see selectivity for these queries:
+```postgresql
+select count(*) from users where birthday < '1989-02-14'; -- 417K
+ 
+select count(*) from users where birthday > '1989-02-14'; -- 572K. The index on birthday is giving back more than half the table. So the index will be skipped.
+```
+So in first case, pg will eliminate more rows to get the rows we want. In other words, the final result set is smaller than the second query, so
+it will use the index more likely.
+
+So when an index doesn't help eliminating enough rows, pg will go straight to the table and won't use the index.
+
+Note: The cardinality and selectivity with range queries are a bit different.
+
+So an index helps on strict equality and first unbounded range(not being between two vals, just less than or greater than),
+but not the second unbounded range. That's because of index selectivity.
+
+Bounded range:
+```postgresql
+explain
+select *
+from users
+where birthday between '1989-01-11' and '1989-12-31';
+```
+It uses the index:
+```
+Bitmap heap scan on users (cost=459.28..14642.01 rows=33449 width=76)
+    Rechecked cond: ((birthday >= '1989-01-11'::date) AND (birthday <= '1989-12-31'::date))
+    -> Bitmap index scan on bday (cost=0.00..450.92 rows=33449 width=0)
+            Index cond: ((birthday >= '1989-01-11'::date) AND (birthday <= '1989-12-31'::date))
+```
+
+### Order by
+Wherever you have sorting that might be used often, you definitely want to get that query index assisted.
+
+```postgresql
+explain
+select *
+from users
+order by birthday;
+```
+Is using the index:
+```
+Index scan using bday on users (cost=0.42..72991.82 width=76)
+```
+> When you order by using an index, the vals are already in order. So pg just reads the index from front to back or in some cases back to front,
+> and then it goes picking up the rows in that order out of heap.
+> But when you don't have an index, it's gonna read the whole heap and **then** sort it.
+
+Using explain on a sort query would look quite different than a query with `WHERE`:
+```
+Gather merge (cost=75605.27..28..171853.12 rows=824924 wudth=76)
+    Workers Planned: 2
+    ->  Sort (cost=74605.24..75636.40 rows=412462 wudth=76)
+        Sort key: created_at
+        ->  Parallel seq scan on users (cost=0.00..17805.62 rows=412462 width=76)
+```
+So it's doing seq scan on table with sort key created_at, then it sorts, using 2 parallel workers, then it merges the result of those
+workers.
+
+### Grouping
+```postgresql
+explain
+select count(*), birthday
+from users
+group by birthday;
+```
+Is using the index(we don't see any sequence scan):
+```
+Finalize HashAggregate (cost=17963.69..18073.09 rows= width=)
+    Group key: birthday
+    ->  workers planned: 2
+    ->  Partial GroupAggregate (cost=0.42..14666.)
+        group key: birthday
+        ->  parallel index only scan using bday on users (cost=0.42)
+```
 
 ## 45.-Index-selectivity
+1. look at queries to derive the candidates for indexing
+2. look at data to determine if it's a good or bad candidate. For example: Every row in users table had a first name of Aaron.
+Our query has: `where first_name = 'Aaron'`. That index won't help us narrow down anything very fast.
+
+**To find out if it's a good index candidate:**
+- Cardinality: number of distinct(unique) vals in the col. Let's say our col is bool. So it can only have 2 vals. So the cardinality is 2.
+There are 2 unique vals in that col. Is that good or bad? Well kinda depends(most cases bad though, because we're gonna have lots of rows).
+If the table only has 2 rows(not considering seq scan is better here), it's good. But if the cardinality is very low and we have million rows,
+that index isn't gonna help us narrow down to the val we're looking for. 
+- selectivity: ratio. how many distinct vals are there **as a percentage** of the total num of rows in the table. The most selective, perfect
+col is the primary key. It's selectivity is 1.00 . So 1 is perfect selectivity(meaning all vals of this col are unique). So the closer
+to 1, the better selectivity of a candidate index. Meaning the more rows we'll filter out and we'll faster get to what we're looking for,
+using this index. Selectivity is a good indicator **IF** the data is normally distributed. But if the data is highly skewed, we can benefit
+from an index on that col in queries that are looking for that skewed data.
+
+These factors could hide a useful index on a col. For example on a bool col, the selectivity on the whole rows of a col might be very close to 0,
+but on some query with `where x = true`, we could have a selectivity close to 1.
+
+Calculate the cardinality and selectivity of birthday col:
+```postgresql
+select count(distinct birthday),                                             -- 10950. cardinality of birthday col
+       (count(distinct birthday)::decimal / count(*)::decimal)::decimal(7, 4)-- 0.0111
+from users;
+
+-- so the selectivity of this col is very bad(because there are only 2 distinct vals in that col):
+select (count(distinct is_pro)::decimal / count(*)::decimal)::decimal(17, 14)-- 0.0000002
+from users;
+```
+Is that good selectivity val? Do we want to be closer to 0 or closer to 1.
+
+So is indexing a bool col a good or bad idea? We still don't know! Because we still don't know what the query pattern is. There are queries
+in which indexing a bool col is a good idea and queries where indexing it is terrible!
+
+```postgresql
+select count(*) filter ( where is_pro is true )
+from users; -- 44382 (across 1M rows)
+
+select ((count(*) filter ( where is_pro is true ))::decimal / count(*)::decimal)::decimal(17, 14)-- 0.0448
+from users;
+```
+So the selectivity of is_pro bool col in cases where is_pro is true, is even better than our birthday col.
+
+So while a col across it's whole rows might not be selective, but if it's data is quite skewed to a point AND that skewed portion is
+what you're looking for, an index on it is helpful. In our case, we have about 1M rows and 44k that is_pro = true. Now if a common
+query that we're running is: `where ... and is_pro = true`, putting an index on is_pro is helpful.
+
+So both of these matters when deciding when to use an index:
+1. query(access pattern)
+2. data(skewness of the data)
+
+You want your index to narrow down to just a few rows. That's why a primary key(not uuid v4) is perfectly selective,
+because it gets you down to 1 row very fast.
+
+PG doesn't run these queries in real time to determine if the index is a good candidate for usage or not.
+It keeps statistics under the hood and they can be updated  by running `analyze` on the table or by `auto vacuum`.
+These stats do get updated but if you do a massive UPDATE, INSERT or DELETE, you might want to update the stats **manually**. 
+
 ## 46.-Composite-indexes
+
+
 ## 47.-Composite-range
 ## 48.-Combining-multiple-indexes
 ## 49.-Covering-indexes
