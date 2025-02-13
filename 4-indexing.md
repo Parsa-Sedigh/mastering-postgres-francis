@@ -290,6 +290,10 @@ to 1, the better selectivity of a candidate index. Meaning the more rows we'll f
 using this index. Selectivity is a good indicator **IF** the data is normally distributed. But if the data is highly skewed, we can benefit
 from an index on that col in queries that are looking for that skewed data.
 
+But to use an index:
+- query
+- data
+
 These factors could hide a useful index on a col. For example on a bool col, the selectivity on the whole rows of a col might be very close to 0,
 but on some query with `where x = true`, we could have a selectivity close to 1.
 
@@ -321,7 +325,7 @@ So while a col across it's whole rows might not be selective, but if it's data i
 what you're looking for, an index on it is helpful. In our case, we have about 1M rows and 44k that is_pro = true. Now if a common
 query that we're running is: `where ... and is_pro = true`, putting an index on is_pro is helpful.
 
-So both of these matters when deciding when to use an index:
+So both of these matters when deciding when to actually use an index:
 1. query(access pattern)
 2. data(skewness of the data)
 
@@ -333,9 +337,144 @@ It keeps statistics under the hood and they can be updated  by running `analyze`
 These stats do get updated but if you do a massive UPDATE, INSERT or DELETE, you might want to update the stats **manually**. 
 
 ## 46.-Composite-indexes
+Composite index: Creating one index on multiple cols at the same time, instead of multiple indexes on those cols.
+Note that pg still has the ability to scan multiple **separate** indexes and then combine the results in an intelligent way.
+So if you don't have a composite index that fits perfectly for a query, pg is gonna do it's best to help you out
+by using the existing separate indexes. This is an awesome capability and not every db has it.
 
+But we get better perf especially for sorting, if we have that composite index.
+
+2 rules:
+1. left to right no skipping(technical name of this rule: left most prefix).
+Most btree impls, follow this rule. But There's a bit of a caveat with pg for this rule. Because pg has the ability to kinda skip.
+2. stops at the first range
+
+```postgresql
+create index multi on users using btree (first_name, last_name, birthday);
+```
+
+```postgresql
+explain
+select *
+from users
+where last_name = 'Francis';
+```
+
+Doesn't use the composite index:
+```
+Gather (cost=1000.00..20045.17 rows=2086 width=76)
+    Workers Planeed: 2
+    ->  Parallel Seq scan on users (cost=0.00..18836.77)
+            Filter: last_name = 'Francis'::text)
+```
+
+When declaring the composite index, the order matters a lot. But in the query, the order doesn't matter. But still, you have to obey the
+left most prefix rule. So you have to include the cols from left to right of declared index, but their order in query doesn't matter,
+**they just need to appear from left to right no skipping**. So if we do this query, it still **uses the index**, although 
+last_name appears before first_name in the query:
+```postgresql
+select *
+from users
+where last_name = 'Francis'
+  and first_name = 'Aaron';
+```
+
+If we skip a col, pg won't use the composite index:
+```postgresql
+select *
+from users
+where last_name = 'Francis'; -- left most col didn't appear, we skipped it. PG can't use the index
+```
+```
+...
+Parallel seq scan on users ...
+```
+
+But if we include the left-most col of the declared index, it uses the composite index, because we formed a left-most prefix
+```postgresql
+select *
+from users
+where first_name = 'Aaron';
+```
+```
+Bitmap heap scan on users (...)
+    Rechecked cond: ...
+    -> Bitmap index scan on multi (...)
+        Index cond: (first_name = 'Aaron'::text)  
+```
+
+But if we do:
+```postgresql
+select *
+from users
+where last_name = 'Francis'
+  and first_name = 'Aaron';
+```
+```
+Index scan using multi on users (...)
+    Index cond: ...
+```
+
+But if we skip last_name, we didn't obey the left most prefix rule, so it shouldn't use the index, but it does use it with a caveat:
+```postgresql
+select *
+from users
+where last_name = 'Francis'
+  and last_name = '1989-02-14';
+```
+```
+Index scan using multi on users (...)
+    Index cond: ...
+```
+What is happening here is a bit of pg optimization. Normally if we had an index on just first_name and birthday(no last_name in between),
+it navigates in the index to rows that matches the cond. But here, we have a col in index in the middle, but not in the query.
+Now pg says: I can still use the first col which is also in the query, so I will navigate through the btree to the chunk of leaf nodes
+that have the first_name = 'Aaron'. I can get there by just using the index. However, since last_name is in the middle of the declared index
+but not in the query, then I'm gonna scan **all the way through the leaf nodes** to look for rows with and `birthday = '1989-02-14'`.
+So instead of directly traversing to the exact rows, it's doing a traversal down to the rows matching the first col cond(which narrows
+down the results quite a bit) and then it scans through the leaf nodes looking for rows matching `birthday` cond.
+
+Why it does that? Because the tree structure is not set up to jump over the levels using last_name, since we didn't include last_name in the query.
+
+But if we don't skip the last_name, it's just using the btree traversal, it doesn't have to scan all of those leaf nodes at the bottom.
+
+Note: We don't want a big index scan at the leaf nodes. If we form the left most prefix, it limits the amount of the index that must be
+scanned.
+
+```postgresql
+select *
+from users
+where first_name = 'Aaron'
+  and last_name = 'Francis'
+  and birthday = '1989-02-14'; -- doesn't do index scan at the leaf node
+```
+
+Order of efficiency:
+- direct btree traversal
+- index scan
+- table scan
+
+---
+
+```postgresql
+create index multi2 on users using btree(first_name, birthday);
+
+select *
+from users
+where first_name = 'Aaron'
+  and birthday = '1989-02-14'; -- uses the multi2 index not multi, because that's more efficient
+```
+```
+Index scan using multi2 on users ...
+...
+```
+
+So your most common conditions(conditions that are common in a lot of queries) need to go on the left side of the declared index.
+So if you have many queries that have first_name in the cond, but only some of them use birthday, put `first_name` towards the left
+and `birthday` more at the right of the declared index.
 
 ## 47.-Composite-range
+
 ## 48.-Combining-multiple-indexes
 ## 49.-Covering-indexes
 ## 50.-Partial-indexes
