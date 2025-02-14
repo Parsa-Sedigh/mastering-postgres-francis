@@ -512,9 +512,61 @@ you're gonna have less commonly used equality **or** your range conditions. Beca
 then it starts scanning the index not traversing(which is not as efficient as traversal which is done on strict equality).
 
 ## 48.-Combining-multiple-indexes
+PG has your back if you have multi separate indexes. It can scan those indexes and put the results together, even if it's less performent
+than composite index, it's still better than a table scan and usually it's better than reading one index and then doing remaining of
+the filtering after pulling rows out of the heap.
 
+```postgresql
+-- individual indexes:
+create index "first" on users using btree(first_name);
+
+create index "last" on users using btree(last_name);
+
+-- composite index
+-- create index "first_last" on users using btree(first_name, last_name);
+```
+
+```postgresql
+explain
+select *
+from users
+where first_name = 'Aaron'
+  and last_name = 'Francis';
+```
+
+```
+Bitmap heap scan on users (...) -- get the rows out of heap
+    Rechecked cond: (...)
+    ->  BitmapAnd (cost=... rows=1 width=0) -- if the cond was using `OR`, this would be: BitmapOr
+        -> Bitmap index scan on first (...)
+            Index cond: (first_name = 'Aaron'::text)
+        -> Bitmap index scan on last (...)
+            Index cond: (last_name = 'Francis'::text)
+```
+Once the Bitmap index scans are completed, it goes to BitmapAnd. What's happening is: 
+1. pg is using the `first` index and finding all the rows that match
+2. Does the same for `last_name` cond with `last` index.
+3. combining them(bit mapping them) by only considering rows that both conds are true for them
+
+Now if you also create the composite index, in addition to those individual indexes, if you run the query again, pg will use
+first_last composite index not those individual indexes:
+```
+Index scan using first_last on users (...)
+Index cond: ...
+```
+
+Caveat: If you run the query with `OR`(first_name = 'Aaron' OR last_name = 'Francis'), pg still decides to use the individual indexes
+instead of composite index! The way that a btree is strucutred, this or cond is hard to satisfy with a single btree.
+So test on your own schema, query patterns and data.
+
+### Summary
+So combining multiple separate indexes might be the strategy you're relying on and that's because pg is prefering it over composite
+in some cases. But in most cases, when you're `AND`ing the conds, a single composite index is gonna perform better, but you might not
+always be `AND`ing them together and you might `OR`ing them in which separate indexes combined with BitmapOr is more performant and is used.
 
 ## 49.-Covering-indexes
+
+
 ## 50.-Partial-indexes
 ## 51.-Index-ordering
 ## 52.-Ordering-nulls-in-indexes
