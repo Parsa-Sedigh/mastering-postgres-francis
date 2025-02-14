@@ -344,10 +344,11 @@ by using the existing separate indexes. This is an awesome capability and not ev
 
 But we get better perf especially for sorting, if we have that composite index.
 
-2 rules:
+If any of these are encountered, other dbs won't use the index after that, but pg continues to use the index but not traversing it,
+just scanning(which is not as efficient):
 1. left to right no skipping(technical name of this rule: left most prefix).
 Most btree impls, follow this rule. But There's a bit of a caveat with pg for this rule. Because pg has the ability to kinda skip.
-2. stops at the first range
+2. stops at the first range: still pg uses the index up until the first range cond is encountered. After that, it scans the index
 
 ```postgresql
 create index multi on users using btree (first_name, last_name, birthday);
@@ -434,6 +435,9 @@ but not in the query, then I'm gonna scan **all the way through the leaf nodes**
 So instead of directly traversing to the exact rows, it's doing a traversal down to the rows matching the first col cond(which narrows
 down the results quite a bit) and then it scans through the leaf nodes looking for rows matching `birthday` cond.
 
+So pg does have the ability to go from a btree traversal(when using an index) to a scan, if you skip over a col.
+While this is not ideal, pg does cover you. The same thing applies for range conditions.
+
 Why it does that? Because the tree structure is not set up to jump over the levels using last_name, since we didn't include last_name in the query.
 
 But if we don't skip the last_name, it's just using the btree traversal, it doesn't have to scan all of those leaf nodes at the bottom.
@@ -469,13 +473,47 @@ Index scan using multi2 on users ...
 ...
 ```
 
-So your most common conditions(conditions that are common in a lot of queries) need to go on the left side of the declared index.
+**So your most common conditions(conditions that are common in a lot of queries) need to go on the left side of the declared index.
 So if you have many queries that have first_name in the cond, but only some of them use birthday, put `first_name` towards the left
-and `birthday` more at the right of the declared index.
+and `birthday` more at the right of the declared index.**
 
 ## 47.-Composite-range
+```postgresql
+create index first_last_birth on users using btree(first_name, last_name, birthday);
+
+create index first_birth_last on users using btree(first_name, birthday, last_name);
+```
+
+```postgresql
+explain select *
+from users
+where first_name = 'Aaron'
+  and last_name = 'Francis'
+  and birthday < '1989-12-31';
+```
+Is using first_last_birth:
+
+```
+Index scan using first_last_birth on users (...)
+Index cond: ((first_name = 'Aaron'::text) and (last_name = 'Francis'::text) and (birthday = '1989-12-31'))
+```
+
+Why it didn't use first_last_birth instead of first_birth_last index? Because that's the most efficient btree index for this query.
+
+In this query, pg will traverse the nodes of the index using the first two strict equality checks. After that, we encounter a range
+condition. We don't know how to traverse the index by that condition. So we go to the very first node that matched those strict equality checks
+and we start **scanning** until we reach birthday: 1989-12-31 and that is our chunk of rows(since we're using less than), so we go
+grab the full info from the heap.
+
+> **So the first time pg encounters a range condition, immediately it starts scanning the index(not traversing it).**
+
+Which is why you want your left most prefix to be commonly used strict equality conditions and then as you move to the right of your declared index,
+you're gonna have less commonly used equality **or** your range conditions. Because if you skip over a col or you encounter a range condition,
+then it starts scanning the index not traversing(which is not as efficient as traversal which is done on strict equality).
 
 ## 48.-Combining-multiple-indexes
+
+
 ## 49.-Covering-indexes
 ## 50.-Partial-indexes
 ## 51.-Index-ordering
