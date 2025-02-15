@@ -325,6 +325,9 @@ So while a col across it's whole rows might not be selective, but if it's data i
 what you're looking for, an index on it is helpful. In our case, we have about 1M rows and 44k that is_pro = true. Now if a common
 query that we're running is: `where ... and is_pro = true`, putting an index on is_pro is helpful.
 
+So if the data distribution is highly skewed in one direction, it might still be a good idea to put an index on it depending on the query.
+Another option is using partial index(pg and sqlite have but not mysql).
+
 So both of these matters when deciding when to actually use an index:
 1. query(access pattern)
 2. data(skewness of the data)
@@ -565,8 +568,243 @@ in some cases. But in most cases, when you're `AND`ing the conds, a single compo
 always be `AND`ing them together and you might `OR`ing them in which separate indexes combined with BitmapOr is more performant and is used.
 
 ## 49.-Covering-indexes
+Instances where indexes are used: 
+1. single index over a single col
+2. single index over multiple cols(composite index)
+3. single indexes over single cols that are combined together using bitmapAnd(or bitmapOr)
 
+In all these cases, pg is using an index to find row addresses(CTIDs) and then go to the heap, potentially rechecking
+the conds over there and grabbing the rows from heap.
+
+With covering indexes, we don't have to make that journey back to the heap to grab the full data of rows, because everything
+the query needs(cols in SELECT, WHERE, GROUP, ORDER and ...) is on the index itself. This is not sth you can rely on all the time.
+
+```postgresql
+create index "first" on users(first_name);
+```
+
+```postgresql
+explain select *
+from users
+where first_name = 'Aaron';
+```
+
+```
+Bitmap Heap scan on users (...) -- still going to heap for getting all data it needs
+    Rechecked cond (...)
+    ->  Bitmap index scan on first (...)
+        Index cond: (...)
+```
+
+Here, it won't go to the heap at all:
+```postgresql
+explain select first_name
+from users
+where first_name = 'Aaron';
+```
+```
+Index only scan using first on users (...)
+    Index cond: (...)
+```
+
+Note: A convering index is not a special type of index, it's a regular index(single col index, composite index) in a special situation.
+It depends on the query and if all the requirements are satisfied with only using the index and not heap.
+
+---
+
+You can add a piece of data alongside the index without using it for indexing.
+You can add that piece at the end in pg, but in most other DBs, you have to add it at the end.
+
+Does not include id at the btree DS(not included in the btree traversal), instead, it shoves id down at the leaf nodes and says:
+Hey, once you get to the bottom using the btree structure, there's a bit of extra data down there(col `id`).
+```postgresql
+create index on users(first_name, last_name) include (id);
+
+explain
+select first_name, last_name, id
+from users
+where first_name = 'Aaron'
+order by last_name; -- still `index only scan`
+```
+
+What's the drawback of this? Why not do this all the time? Why not just include a bunch of cols that we don't need in the index
+but we just want for having a covering index situation?
+
+1. You're gonna bloat up your btree, if you include a bunch of extra col there(especially large cols like text or json that could have
+large data), just because you think you might get a covering index. Kinda you're recreating the table there!
+2. we know if there are lots of writes to the table, pg has to go back to index and fetch it out of table anyway. In covering index situation,
+there's a step in which pg will check: Hey I got all these rows out of the index, however, I don't know if those rows are visible
+to the current tx right now. So it gets the CTIDs from the index and it checks a visibility map. And if the table is written to(changing) often,
+that visibility map is gonna say: Hey, those rows aren't visible to you, so it has to go check the heap anyway(therefore we get no covering index
+in that case). So for a table with high write throughput, you might not hit covering indexes ever!
+
+Note that when using covering index, checking the visibility map does incur some cost but it's still much faster than checking the table.
+This is because when not in covering index situation, pg will go check the heap anyway.
+
+These are very good for certain hot paths.
+
+### Chatgpt on covering index in high-write table:
+Why Does PostgreSQL Check the Heap?
+
+PostgreSQL does not store visibility information in the index. Instead, it stores visibility metadata in the heap (table data). 
+This is different from databases like MySQL’s InnoDB, where indexes contain transaction visibility information.
+
+When using an Index-Only Scan, PostgreSQL tries to fetch all necessary data from the index without accessing the heap.
+However, before it can return the data to the query, it must ensure that each row is visible to the current transaction. This check is
+performed using the visibility map.
+
+How the Visibility Map Works
+- The visibility map keeps track of whether a page in the heap contains only tuples (rows) that are visible to all transactions.
+- If a page is marked as “all-visible”, PostgreSQL can skip checking the heap and return the index-only scan result directly.
+- If the visibility map does not mark the page as all-visible, PostgreSQL must fetch the row from the heap to check if it is valid for the current transaction.
+
+What Happens in a High-Write Table?
+- Every time a row is INSERTED, UPDATED, or DELETED, the visibility of tuples changes.
+- PostgreSQL must clear the all-visible flag for the affected heap pages.
+- This means the next query cannot rely on the index alone and must check the heap for visibility.
+- As a result, index-only scans become ineffective, forcing PostgreSQL to go back to heap pages frequently.
 
 ## 50.-Partial-indexes
+Put an index on a **portion** of the table. Even putting a unique constraint over a portion of the table.
+
+```postgresql
+-- add a predicate to make it a partial index
+create index email on users (email)
+    where is_pro is true;
+```
+Here, the btree DS is not being created as a composite index, it's still an index on a single col.
+
+Now if you try to get a row that matches the predicate of declared index, pg won't use the index!
+```postgresql
+explain
+select *
+from users
+where email = 'aaron...'; -- this row has is_pro = true
+```
+```
+Gather (...)
+    Workers planned: 2
+    ->  Parallel seq scan on users
+        Filter: ...
+```
+So it doesn't use the index. This is because we haven't matched the query to our index predicate. If we do:
+
+```postgresql
+explain
+select *
+from users
+where email = 'aaron...'
+  and
+    is_pro is true; -- this part matches the predicate of the declared index
+```
+Now is using the index:
+```
+Index scan using email on users (...)
+    Index cond: ...
+```
+
+Note: Pg won't use the index, if we had `is_pro is false` in the query. Because the predicate doesn't match.
+
+Note: When you have a massive table but just a few rows are interested to you for querying fast, that's a great use case for a
+partial index. So we prevent the data we don't want from entering the btree in the first place. That's gonna make the btree small
+and won't slow the writes because we're not maintaing a massive btree with values that we don't care and also since the btree is smaller,
+the reads that use the index will still be fast.
+
+### Partial unique index
+We can't create a unique index on a col that already has duplicate val. But we can create a partial unique constraint.
+This allows in cases where we have a soft-deleted row, but he wants to signup again.
+
+Another example: could an order only have 1 state or can it have multiple states? We can answer this question based on the business needs
+using unique index.
+
+```postgresql
+create unique index email on users (email) where deleted_at is null;
+```
+
+### Summary
+Remember to include the predicate that was used in declared partial index, in the query as well. Otherwise the planner won't use that
+partial index.
+
 ## 51.-Index-ordering
+We should create an index(especially for composite index), in the order that we wanna read it. So if we're commonly sorting a col descending,
+you can create an index over that col in descending order.
+```postgresql
+select * from pg_indexes where tablename = 'users';
+
+create index created_at on users(created_at);
+```
+
+If we order by created_at in asc(default):
+```postgresql
+select *
+from users
+order by created_at
+limit 10;
+```
+```
+Limit (...)
+    ->  index scan using created_at on users (...)
+```
+
+But if we order by desc:
+```
+Limit (...)
+    ->  Index scan Backward using created_at on users (...) -- notice `Backward`
+```
+So pg has the ability to read the index from front to back(asc) or start at the end and read from back to front(when order by in desc).
+So it has the ability to do backwards index scan. 
+
+> However, when you have a composite index and you're sorting them in different directions, pg can't use the index anymore. So you have
+> to create the index in the order you'll read.
+> Note: If all of the cols have the same direction(all asc or all desc), pg uses the index.
+
+```postgresql
+-- composite index
+create index birthday_created_at on users (birthday, created_at);
+
+explain
+select *
+from users
+order by birthday, created_at
+limit 10; -- uses the index: Index scan using birthday_created_at ...
+
+-- if we change both to desc, it's still using the index
+explain
+select *
+from users
+order by birthday desc, created_at desc
+limit 10; -- index scan backward
+
+explain
+select *
+from users
+order by birthday desc, created_at
+limit 10;
+-- limit ...
+    --  -> incremental sort ...
+            -- Sort key: birthday desc, created_at
+            -- presorted key: birthday
+            --   index scan backward using birthday_created_at on users ...
+```
+So we got an `incremental sort`. That's because an index is one singular DS, pg can't read part of it desc and part of it ascending, so 
+it can't read part of it forward and part of it backwards. So pg has to do gathering phase and `incremental sort` after.
+
+To fix this, create the index in the order you want:
+```postgresql
+create index birthday_created_at on users (birthday, created_at desc);
+```
+
+Now the query will use the index.
+
+Note: If you run this query, it will be using the index in backward, because the query uses the cols in complete opposite of 
+the cols in declared index.
+```postgresql
+explain
+select *
+from users
+order by birthday desc, created_at
+limit 10; -- index scan backward ...
+```
+But you can't just flip one of them, it won't use the index: `birthday desc, created_at desc -- gets incremental sort`.
+
 ## 52.-Ordering-nulls-in-indexes
