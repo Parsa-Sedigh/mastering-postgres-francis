@@ -143,7 +143,7 @@ select generate_series(101, 110);
 
 -- two queries side by side:
 select *
-from rows from (generate_series(1, 10),generate_series(101, 112)) as t(lower, upper);
+from rows from (generate_series(1, 10),generate_series(101, 112)) as t(lower, upper); -- t is table_alias, in (), we specify the col aliases
 ```
 We want the above queries side by side, but we can't do cross join, because that's gonna produce too many rows.
 We just want them side by side. So we use `ROWS FROM`.
@@ -175,9 +175,38 @@ from rows from (
 ```
 
 ## 68.-Filling-gaps-in-sequences
+**We're gonna generate a series then `LEFT JOIN` it to cover gaps in the right table seq.** Why `left join`? Because we want all the rows
+from the left table to show up, even if there are no matches in the right hand table.
+
+EX) In the result of this report, some sale_date days are missing. Because there weren't any sales in some days.
+```postgresql
+select sale_date, sum(amount)
+from sales
+group by sale_date
+order by sale_date;
+```
+
+To fill the gaps(missing dates):
+```postgresql
+select all_dates.sale_date::date, coalesce(total_amount, 0)
+from generate_series('2024-01-01'::date, '2024-12-31'::date, '1 day') as all_dates(sale_date)
+         left join (
+    -- note: We don't need ordering here, we can do it outside of the subquery later
+    select sale_date, sum(amount) as total_amount
+    from sales
+    group by sale_date) as sales on all_dates.sale_date = sales.sale_date;
+```
+
+We cast all_dates.sale_date::date, because we don't want to show it as timestamptz.
+
+In many other dbs, you're stick with recursive CTE to do this. Because they don't have a generate_series() func in them.
+
 ## 69.-Subquery-elimination
+
 ## 70.-Combining-queries
+
 ## 71.-Set-generating-functions
+
 ## 72.-Indexing-joins
 ## 73.-Introduction-to-advanced-SQL
 ## 74.-Cross-joins
