@@ -93,11 +93,91 @@ Merge join
 ```
 
 ## 66.-Lateral-joins
-67.-ROWS-FROM
-68.-Filling-gaps-in-sequences
-69.-Subquery-elimination
-70.-Combining-queries
-71.-Set-generating-functions
-72.-Indexing-joins
-73.-Introduction-to-advanced-SQL
-74.-Cross-joins
+Not a different type of join, just a different qualifier for existing join. You can have an inner join lateral, outer join lateral,
+cross join lateral.
+
+What lateral keyword tells pg is: for every row in preceding table, run this subquery and use this result set.
+A lateral join can be terribly expensive. Depending on how big the preceding table is and how expensive the subquery is.
+Note that you're gonna run that subqeury once per row of preceding table.
+
+Get everyone's latest bookmark. There are a couple of ways to do this:
+- lateral join
+- CTE
+
+```postgresql
+select *
+from users left join lateral (
+    -- subquery to get top bookmark per user
+    select * from bookmarks where user_id = users.id
+                            order by id desc
+                            limit 1
+) as most_recent_bookmark on true
+limit 10;
+```
+1. Why joining `on true`? Because we're actually constraining the result set inside of the subquery, so anything that comes back from the
+subquery should be joined(we already got the last bookmark, we only need to join it with users).
+
+But running it give this error: 
+```
+ERROR: invalid reference to FROM-clause entry for table "users".
+Hint: To reference that table, you must mark this subquery with LATERAL.
+```
+
+So pg is telling that we have referenced a table incorrectly. We can't reference a preceding table inside of a subquery unless we mark
+it as lateral. After using lateral, for every row in preceding table, it's gonna run the subquery.
+
+2. why we used `left join`? Because some of the users might not have a bookmark at all, but we need all the users(left table). We can see this by
+using `where most_recent_bookmark.id is null`.
+
+## 67.-ROWS-FROM
+With `rows from` we can put cols next to each other without `JOIN`ing.
+
+Usually in a set generating func, you're not using the ordinality, we don't have the primary key and foreign key that we can `JOIN` on,
+but you still want to have the cols next to each other.
+
+```postgresql
+-- generate_series is a set generating func
+select generate_series(1, 10);
+
+select generate_series(101, 110);
+
+-- two queries side by side:
+select *
+from rows from (generate_series(1, 10),generate_series(101, 112)) as t(lower, upper);
+```
+We want the above queries side by side, but we can't do cross join, because that's gonna produce too many rows.
+We just want them side by side. So we use `ROWS FROM`.
+
+Note: In `rows from`, The shorter col gets null padded.
+
+`ordinality: auto incrementing int.`
+
+EX: Gen rows for the days of the year:
+```postgresql
+select date::date, num
+from rows from (
+         generate_series('2024-01-01'::date, '2024-12-31'::date, '1 day'),
+         generate_series(1, 380) -- we could go up to 366 to cover everything just in case.
+         ) as t (date, num)
+where date is not null; -- to eliminate null-padded rows
+```
+In this ex, we could got away with just ordinality, since we started our generate_series() num at 1 and that's what ordinality does, it puts
+an auto-incrementing int in there.
+
+```postgresql
+-- put arrays side by side.
+select *
+from rows from (
+         unnest(array [101, 102, 103]),
+         unnest(array ['Laptop', 'Smartphone', 'Tablet']),
+         unnest(array [999.99, 499.99, 299.99])
+         ) as combined(product_id, product_name, price);
+```
+
+## 68.-Filling-gaps-in-sequences
+## 69.-Subquery-elimination
+## 70.-Combining-queries
+## 71.-Set-generating-functions
+## 72.-Indexing-joins
+## 73.-Introduction-to-advanced-SQL
+## 74.-Cross-joins
