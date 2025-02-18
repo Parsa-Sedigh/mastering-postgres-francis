@@ -202,10 +202,294 @@ We cast all_dates.sale_date::date, because we don't want to show it as timestamp
 In many other dbs, you're stick with recursive CTE to do this. Because they don't have a generate_series() func in them.
 
 ## 69.-Subquery-elimination
+Everything we've done with subqueries so far has been **producing a result set** that we then treat as a table LIKE use to `JOIN` or ... .
+Now we wanna use subquery as **a way to filter a table based on data from a related table**.
+Note: We don't want to show the data of the related table, so we don't want to use a `JOIN`. So:
+1. producing a result set
+2. a way to filter a table based on data from a related table
+
+EX) Return users that(filter) have most bookmarks(data from another table).
+
+A) We don't want to return the data from the bookmarks table, so we're not gonna use a `JOIN`, we just want the users based on
+the bookmarks table, so we use a subquery.
+
+- projects that have 0 tasks in it
+- users that have > 16 bookmarks
+
+```postgresql
+select user_id, count(*)
+from bookmarks
+group by user_id
+having count(*) > 16;
+```
+
+Now we could do an inner join on the prev query and then just select the users cols. That's fine, but we can also do it with subquery.
+```postgresql
+-- this query is called a semi-join. If you do, `id not in`, it's called anti-join.
+select *
+from users
+where id in (select user_id
+             from bookmarks
+             group by user_id
+             having count(*) > 16);
+```
+
+Query decomposition: running a query, get back it's result and then put the result into subsequent queries.
+That's not performant. Because of multiple round trips to db server.
+
+Note: If you wanted to bring count(*) from users ... back, you have to switch to JOIN, because in the subquery approach, we want exactly
+one col back from the subquery.
+```postgresql
+-- eliminate rows from the users table based on bookmarks table.
+-- For this, we start from actually the bookmarks table, then JOIN it with users.
+select users.id, first_name, last_name, ct
+from (select user_id, count(*) as ct
+      from bookmarks
+      group by user_id
+      having count(*) > 16) as whales
+         inner join users on whales.user_id = users.id
+order by ct desc;
+```
+Note: We had to use a subquery for `from`, because we can't write JOIN after having part, we have to wrap the `whales` query.
+
+### Another approach for subqueries for elimination
+With `exists (...)`, we're referencing the outer table
+
+```postgresql
+select *
+from users
+where exists (select 1 -- all we're looking for is mere presence of a row
+              from bookmarks
+              where users.id = user_id -- we're referencing outer table
+              group by user_id
+              having count(*) > 16);
+```
+
+The fundamental difference is the query we pass to parentheses in exists (), is gonna run for every row in the outer query. Which can be good.
+Because where exists () will short circuit the first time it finds a true val.
+
+But this query is a lot worse than the first one in our example. We can see this using `explain analyze`.
+
+**Note: `exists ()` operates on existence of a row. But in () looks at the vals.**
+
+Let's see a use case where the `exists (...)` it's actually good:
+
+All users that have bookmarked a secure url:
+```postgresql
+select *
+from users
+where exists (
+    select 1 from bookmarks where users.id = user_id and starts_with(url, 'https')
+);
+```
+Here, for every user row, if it finds a secure url, it won't keep looking at the bookmarks table anymore. Because we just want the
+existence. That's a case where `exists ()` is faster than `in()`.
+
+So choosing `in ()` vs `exists ()` depends on the case.
+
+---
+
+
+```postgresql
+explain (analyze, costs off)
+select *
+from users
+where id in (select user_id
+             from bookmarks
+             group by user_id
+             having count(*) > 16);
+
+explain (analyze, costs off)
+select *
+from users
+where exists (select 1
+             from bookmarks
+             where users.id = user_id
+             group by user_id
+             having count(*) > 16);
+```
+
+```
+FOR FIRST QUERY:
+
+Merge Join (actual time=54.369..612.415 rows=19 loops=1)
+
+    Merge Cond: (users. id = bookmarks.user_id)
+    -> Index Scan using users_pkey on users (actual time=0.066..91.946 rows=940763 loops=1)
+    -> GroupAggregate (actual time=47.241..495.349 rows=19 loops=1)
+        Group Key: bookmarks.user_id
+        Filter: (count (*) > 16)
+        Rows Removed by Filter: 983392
+        -> Index Only Scan using bookmarks_user_id_idx on bookmarks (actual time=0.053.281.866 rows=4967570 loops=1) -- loops=1 , so only did it once
+                Heap Fetches: 0
+Planning Time: 0.213 ms
+Execution Time: 612.520
+
+===============
+
+For SECOND QUERY:
+
+Seq Scan on users (actual time=98.419..1237.988 rows=19 loops=1)
+    Filter: EXISTS(SubPlan 1)
+    Rows Removed by Filter: 989889
+    SubPlan 1
+        →> GroupAggregate (actual time=0.001..0.001 rows=0 loops=989908)
+                Filter: (count (*) > 16)
+                Rows Removed by Filter: 1
+                -> Index Only Scan using bookmarks_secure_url on bookmarks (actual time=0.001.. 0.001 rows=5 loops-989908)
+                        Index Cond: (user_id = users.id)
+                        Heap Fetches: 0
+Planning Time: 0.146 ms
+Execution Time: 1238.029 ms
+```
+
+In line `Index Only Scan using bookmarks_user_id_idx`, it only did it once (loops=1). So the subquery only ran once. Which is very good.
+It also used it as covering index.
+
+But the second query, has a lot of loops. So the subquery is running a lot but it's not getting any of the benefits from `exists ()`'s short circuit,
+because we're saying: group on all bookmarks(`group by user_id`).
+
+So in these kind of queries where we have some aggregate(like count(*)), we only want to do the subquery once.
+But sometimes you actually want to run the subquery per row.
+
+The subquery we pass to `where exists ()` is allowed to reference the outer table and it's gonna run(evaluate) for every row of the outer query.
+
+### Careful with `where not in ()` and null
+```postgresql
+select *
+from users
+where id not in (values (1), (2), (null));
+```
+This query always returns nothing.
+
+So the second we get a `null` in our table and we do not in (), the query returns nothing.
+
+That's because the comparison to null is null. 
+
+So use not exists ().
 
 ## 70.-Combining-queries
+Instead of putting results side by side, here, we wanna put them on top of each other.
+- union
+- intercept
+- except
+
+```postgresql
+-- should have the same number of cols and datatypes
+select 1 
+union 
+select 2;
+
+-- Let's say due to GDPR, we move the deleted users to users_archive table.
+-- find out if a user has been deleted or not. If a user is deleted, it appears in `users_archive` and not in `users` anymore.
+-- With this query, we can search across all the users even if they are in different tables
+select true as active, * from users where email = 'aaron.francis@example.com'
+union
+select false, * from users_archive where email = 'aaron.francis@example.com';
+-- active: 1, ...
+```
+
+### union all
+This query only gives one row, instead of two. To have both, we have to use `union all`.
+```postgresql
+select 1 
+union 
+select 1;
+```
+Note: By default, union is gonna remove the duplicate rows which can be very expensive. So if you don't want that, use `union all`.
+Why it's expensive?
+
+Because it has to compare the entire row with every row in the result set and it has to do this for every row.
+
+So if you know(either by pure logic or just some business process in your brain) there can't be duplicates, or you actually want to see
+the duplicates, use `union all`, because it's gonna be way faster.
+
+The same for `intersect all`. It's faster than `intersect`, because it doesn't perform removing duplicates op.
+
+### Order of ops
+Be aware about order of ops:
+
+```postgresql
+select generate_series(1, 5)
+intersect all
+( -- first this runs
+    select generate_series(3, 7)
+    union all 
+    select generate_series(10, 15)
+);
+```
+
+### except
+Give me the result of first Q except where it overlaps with the second Q.
+
+```postgresql
+-- Give me entire result of first Q, except the vals in second Q. So 3, 4 and 5 will not be included, since they show up in the second Q.
+select generate_series(1, 5)
+except all
+select generate_series(3, 7);
+```
 
 ## 71.-Set-generating-functions
+```postgresql
+select generate_series('2024-01-01'::date, '2024-01-10'::date, '1 day')::date as date;
+
+-- even nums from 0 to 100
+select generate_series(0, 100, 2)::int;
+
+-- turn the arr into a set of rows by unnesting it
+select unnest(array [1, 2, 3, 4, 5]) as elements;
+
+-- There's an option to have ordinality. Ordinality is great when you need a unique inc id for these generated rows.
+select ordinality, element
+from unnest(array ['first', 'second', 'third']) with ordinality as t(element, ordinality); -- t is table alias and in (), we specify the col aliases
+
+-- json_to_recordset turns a json arr of objs into a table(so we can query it and ...)
+-- NOTE: We didn't cast the str we passed to the func, to json type. This is in contrast to jsonb. If you wanted jsonb, you had to
+-- cast the str to jsonb too. This is because the `json` type is pure text.
+select * from json_to_recordset('[
+  {
+    "id": 1,
+    "name": "Alice",
+    "email": "alice@example.com"
+  },
+  {
+    "id": 2,
+    "name": "Bob",
+    "email": "bob@example. com"
+  }
+]') as x(id int, name text, email text);
+
+-- jsonb
+select * from jsonb_to_recordset('[
+  {
+    "id": 1,
+    "name": "Alice",
+    "email": "alice@example.com"
+  },
+  {
+    "id": 2,
+    "name": "Bob",
+    "email": "bob@example. com"
+  }
+]'::jsonb) as x(id int, name text, email text);
+
+select regexp_matches('The quick brown fox jumps over the lazy dog', '\m\w{4}\M', 'g') as match;
+-- result:
+-- {over}
+-- {lazy}
+
+-- CAPTURING
+-- Let's say we have a formatted str from some other system that you want to extract data out of. Here, we're capturing the vals for Name and Age.
+select regexp_matches('Name: Alice, Age: 30; Name: Bob, Age: 25', 'Name: (\w+), Age: (\d+)', 'g') AS match;
+-- {Alice,30}
+-- {Bob,25}
+
+-- We could have a joined str from an outside system or a csv.
+select string_to_table('apple,banana,cherry', ',') as fruit;
+-- apple
+-- banana
+-- cherry
+```
 
 ## 72.-Indexing-joins
 ## 73.-Introduction-to-advanced-SQL
