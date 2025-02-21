@@ -430,6 +430,8 @@ select generate_series(3, 7);
 ```
 
 ## 71.-Set-generating-functions
+Funcs that return not just a single val, but a set of rows and potentially a set of cols.
+
 ```postgresql
 select generate_series('2024-01-01'::date, '2024-01-10'::date, '1 day')::date as date;
 
@@ -492,5 +494,76 @@ select string_to_table('apple,banana,cherry', ',') as fruit;
 ```
 
 ## 72.-Indexing-joins
+### Difference between foreign key and foreign key constraint
+A foreign key constraint enforces referential integrity and a foreign key is just a concept where you have a pointer to
+another table and a row in that table.
+
+We wanna add indexes to make JOINs faster, so we'll index our foreign keys.
+
+NOTE: When you create a primary key or a unique constraint in the parent table, that's enforced by an index. So that index
+is automatically created in the parent table. However, when you create a foreign key or even a foreign key constraint,
+an index is not automatically created(in the child table which is referencing the parent using foreign key).
+
+```postgresql
+create table states (
+    id bigint generated always as identity primary key ,
+    name text
+);
+
+create table users (
+    id bigint generated always as identity primary key ,
+    state_id bigint references states(id),
+    name text
+);
+
+select * from pg_indexes where tablename = 'states';
+-- public states states_pkey null create unique index states_pkey on public.states using ...
+
+select * from pg_indexes where tablename = 'cities';
+-- public cities cities_pkey null create unique index cities_pkey on public.cities using ...
+-- NOTE: So no index was automatically created for the state_id foreign key. But we can do it ourselves.
+```
+
+Here, the parent table is users(since each user can have many bookmarks)
+```postgresql
+explain select *
+from users
+         inner join bookmarks on bookmarks.user_id = users.id
+where users.id < 100;
+```
+```
+Gather (cost=1012.67..94051.93 rows=537 width=153)
+    Workers Planned: 2
+    → Hash Join (cost=12.67..92998.23 rows=224 width=153)
+        Hash Cond: (bookmarks.user_id = users.id)
+        
+         -- but then we're scanning the entire bookmarks to look for bookmarks with matching the join cond
+        -> Parallel Seq Scan on bookmarks (cost=0.00..87552.25 rows=2069825 width=77)
+        -> Hash (cost=11.33..11.33 rows=107 width=76)
+            →> Index Scan using users_pkey on users (cost=0.42..11.33 rows=107 width=76) -- uses index on where users.id < 100
+                 Index Cond: (id < 100)
+```
+
+So create index on the child table foreign key:
+```postgresql
+-- name it idx_bookmarks_user_id or fkey_bookmarks_user_id
+create index idx_bookmarks_user_id on bookmarks(user_id);
+```
+
+Now if we run the JOIN query again:
+```
+Nested Loop (cost=0.86..3059.26 rows=537 width=153)
+    → Index Scan using users_pkey on users (cost=0.42..11.33 rows=107 width=76)
+        Index Cond: (id < 100)
+    → Index Scan using idx_bookmarks_user_id on bookmarks (cost=0.43..28.43 rows=6 width=77)
+        Index Cond: (user_id = users.id)
+```
+
+Note: We can create a composite index with the left most col of it being the col we JOIN on. With this, we get the benefit
+of JOIN using the index and the filtering.
+
+So if you wanna JOIN tables, it usually makes sense to have an index on the foreign key(child table) either by just the foreign key col
+or as a part of a composite index which it's left most col is the foreign key col.
+
 ## 73.-Introduction-to-advanced-SQL
 ## 74.-Cross-joins
