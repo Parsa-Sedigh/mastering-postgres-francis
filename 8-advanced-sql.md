@@ -541,6 +541,66 @@ select * from categories where id not in (
 Prefer `not exists ()` in these cases.
 
 ## 83.-Row-value-syntax
+When comparing more than one value, to more than one value. Handy when doing sth like pagination using cursors.
+When data is stored across multiple cols, but we need to compare them with another set of data.
+
+```postgresql
+select (1, 2, 3);
+
+-- OR:
+
+select row(1, 2, 3); -- row keyword is optional
+
+select (1, 2, 3) = (1, null, 3); -- NULL
+
+-- BUT this returns FALSE, not NULL!!!!
+select (1, 2, 3) = (1, null, 4); -- FALSE
+```
+Why the last query returns FALSE instead of NULL?
+
+Because there's no value that we can substitute with NULL in the example to get those row values to be equal. So PG says:
+No matter what, those two row values can never be equal. So FALSE.
+
+NOTE: When you do pagination, your ordering must be deterministic. It must be the exact same thing every time.
+
+### Implementing cursor based pagination using row value syntax
+With row value syntax, it makes this easier.
+
+cursor = keyset = key based pagination
+
+The client gives us a cursor. Then we say:
+```postgresql
+select * from users
+where (first_name, last_name, id) > ('Aaliyah', 'Bashirian', 322714) -- client sent us this
+order by first_name, last_name, id
+limit 10;
+```
+
+So we used row value syntax to compare **all three of those cols** rather than comparing those cols separately. If we wanted to do
+discrete col comparisons, it would be a lot more.
+
+Another example: Let's say we're given a schema that year, month and day are in separate cols(which is a very bad practice! store them
+together). We can use row value syntax to do easy comparison on that, even though that's an awful schema.
+```postgresql
+with date_parts as (
+    select
+        extract(year from gs.date) as year,
+        extract(month gs.date) as month,
+        extract(day gs.date) as day
+    from generate_series('2025-01-01'::date, '2025-12-31'::date, '1 day') as gs(date)    
+)
+select * from date_parts
+where (year, month, day) between (2025, 01, 20) and (2025, 03, 3);
+```
+
+The moment we need to operate on multi-month dates, like dates that are between two dates but in different months, it gets hard:
+(month = 1 and day > 29) or (month = 2 and day < 7). This is hard. 
+We can do it easier with row value syntax.
+
+So even though those are discrete cols, we're kinda treating them as one col.
+
+This syntax expands into a bunch of different comparisons.
+
 ## 84.-Views
 ## 85.-Materialized-views
 ## 86.-Removing-duplicate-rows
