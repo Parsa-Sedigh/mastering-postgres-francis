@@ -498,11 +498,54 @@ The first run, will get the parent nodes. Second run, will get one `->`(one dept
 ![](img/81-1.png)
 
 ## 82.-Handling-nulls
+NULL is unknown. NULL is not equal to NULL(`null = null` returns `null`), because we have no idea what is inside there.
+Are two unknown things equal? We don't know! So it returns `NULL`.
+
+```postgresql
+select 1 is not distinct from 1; -- the same as saying: 1 = 1
+
+select 1 is distinct from null; -- TRUE, we don't get a NULL anymore
+
+-- So when we use this operator, null is the same as null. But using = op, they're not the same.
+select null is distinct from null; -- TRUE
+
+select null is null; -- TRUE
+```
+
+### NULL in order by
+When doing `order by`, NULL vals are treated as big values, so they end up at the bottom. So if we `order by <> desc`, NULL will be
+at the beginning.
+```postgresql
+select * from categories order by parent_id nulls first;
+```
+
+### Functions operating on NULL
+```postgresql
+select id, coalesce(parent_id, 0)
+from categories;
+```
+
+Opposite of coalesce() is nullif(). If the first and second arg are equal, it returns null. If they're not equal, it returns the
+first arg.
+```postgresql
+select nullif(parent_id, 1)
+from categories; -- any parent_id that is 1, will be returned as null, for others, their parent_id will be returned
+```
+
+Do not allow subqueries to generate NULL values when they're used in NOT IN:
+```postgresql
+select * from categories where id not in (
+    -- this subquery shouldn't contain NULL, otherwise, whole query will return NULL
+);
+```
+Prefer `not exists ()` in these cases.
 
 ## 83.-Row-value-syntax
 ## 84.-Views
 ## 85.-Materialized-views
 ## 86.-Removing-duplicate-rows
+
+
 ## 87.-Upsert
 ## 88.-Returning-keyword
 ## 89.-COALESCE-generated-column
