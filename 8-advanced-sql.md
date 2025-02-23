@@ -102,7 +102,7 @@ group by e.id;
 
 ## 77.-Window-functions
 For operating on a chunk(partition of a result set. We get to define how that chunk(partition is determined. But thee funcs, 
-won't collapse the rows.
+won't collapse the rows(unlike aggregate funcs and group by), they just add additional info.
 
 The window definition is passed to `over ()`.
 
@@ -236,6 +236,86 @@ number of days without the negative sign.
 Note: With lead() and lag(), we can **peek** rows from behind or ahead in the current row's frame.
 
 ## 78.-CTEs
+A way for refactoring query into distinct parts. They can imprv perf in situations where you have multiple same subquery, you can extract
+that subquery into a CTE, then since it's referenced multiple times, PG will materialize it (into one temp table) which means running it once here
+and reference that temp table multiple times instead of running it multiple times(the case without CTE).
+
+Note: We need to consider some perf things here.
+```postgresql
+-- NOTE: with is_deleted col, we know which table a row came from
+with all_users as (
+    select false as is_deleted, * from users
+    union all
+    select true as is_deleted, * from users_archive
+)
+select * from all_users where email = 'sth@sth.com';
+```
+
+We could name the cte as `users` which is the name we have as a table as well! Why would we do that?
+Maybe we have an orm, but we might need to search across regular users and users_archive at the same time. We might loose some of
+the abilities of the orm. We don't loose those abilities if we redefine the users table as a `union all` of users and users_archive.
+And then we let the ORM generate the query.
+
+If we run `explain (analyze, costs off)` on prev cte + query, we get:
+```
+Append (actual time=0.072..2.266 rows=1 loops=1)
+    -> Index Scan using email_btreeton users (actual ti...
+        Index Cond: (email = 'aaron. francis@example. co... -- HERE
+    -> Seq Scan on users_archive (actual time=2.058..2....
+        Filter: (email = 'aaron.francisdexample.com'::... -- HERE
+        Rows Removed by Filter: 10091
+Planning Time: 0.379 ms
+Execution Time: 2.337 ms
+```
+So the where cond gets pushed down from the outer query into each individual query of CTE.
+What's happening here is PG can decide whether to materialize or not materialize a CTE.
+Here, pg decided not to materialize it(the CTE I mean) because it's only being referenced once in the outer query.
+In other words, it gets no benefit from running the query, writing it to a temp table and then running query against it.
+
+Materialization: creating a temp table and operate against it.
+
+Now if this CTE was being referenced multiple times, it will materialize the CTE so that it doesn't have to run the CTE multiple times.
+It just run it once and use it multiple times. And it could be a good thing or bad, it depends on your query. But you can tell
+PG to materialize a CTE or not. Because maybe you understand sth about your data set.
+
+Note: So if the CTE is referenced twice or more in the outer query, it's gonna materialize it and sometimes that's exactly what you're looking for,
+sometimes it's not. But if in a situation, you disagree with pg, you can force it make the CTE materialize or not.
+
+**If you want everytime a CTE gets referenced, you can say: not materialized.**
+```postgresql
+with all_users as not materialized (
+    -- ...
+)
+select *
+from all_users;
+```
+
+
+If we make the prev query(that we ran explain on) materialized, it makes it worse! Because it has to scan both tables and then
+put them together to form the CTE table, then apply the filter:
+```
+CTE Scan on all_users (actual time=208.195..550.485 rows=1 loops=1)
+    Filter: (email = 'aaron.francis@example.com':: text)
+    Rows Removed by Filter: 999998
+    CTE all_users
+        -> Append (actual time=0.040..128.183 rows=999999 loops=1)
+            -> Seq Scan on users (actual time=0.039..88.980 rows=989908 loops=1)
+            -> Seq Scan on users_archive (actual time=0.014..0.830 rows=10091 loo...
+Planning Time: 0.174 ms
+Execution Time: 554.132 ms
+```
+
+CTEs can reference prev CTEs.
+```postgresql
+with all_users as not materialized (
+    -- ...
+),
+     aarons as (select *
+                from all_users
+                where email = 'aaron.francis@example.com')
+select *
+from aarons;
+```
 
 ## 79.-CTEs-with-window-functions
 ## 80.-Recursive-CTE

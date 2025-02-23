@@ -239,6 +239,8 @@ That's not performant. Because of multiple round trips to db server.
 
 Note: If you wanted to bring count(*) from users ... back, you have to switch to JOIN, because in the subquery approach, we want exactly
 one col back from the subquery.
+
+users that have > 16 bookmarks:
 ```postgresql
 -- eliminate rows from the users table based on bookmarks table.
 -- For this, we start from actually the bookmarks table, then JOIN it with users.
@@ -564,6 +566,3 @@ of JOIN using the index and the filtering.
 
 So if you wanna JOIN tables, it usually makes sense to have an index on the foreign key(child table) either by just the foreign key col
 or as a part of a composite index which it's left most col is the foreign key col.
-
-## 73.-Introduction-to-advanced-SQL
-## 74.-Cross-joins
