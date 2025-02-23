@@ -390,19 +390,79 @@ For this:
 So we made this into one col
 
 ```postgresql
-with user_bookmarks as (
-    select *,
-           lag(id) over user_bookmarks is null  as is_first_bookmark,
-           lead(id) over user_bookmarks is null as is_last_bookmark,
-           (lag(id) over user_bookmarks = lead(id) over user_bookmarks) is null as is_first_or_last
-    from bookmarks
-    window user_bookmarks as (partition by user_id order by id)
-)
-select * from user_bookmarks where is_first_or_last is true
+with user_bookmarks as (select *,
+                               lag(id) over user_bookmarks is null                                  as is_first_bookmark,
+                               lead(id) over user_bookmarks is null                                 as is_last_bookmark,
+                               (lag(id) over user_bookmarks = lead(id) over user_bookmarks) is null as is_first_or_last
+                        from bookmarks
+                        window user_bookmarks as (partition by user_id order by id))
+select *
+from user_bookmarks
+where is_first_or_last is true
 limit 30;
 ```
 
 ## 80.-Recursive-CTE
+```postgresql
+with recursive numbers as (
+    select 1 as n -- anchor condition. non-recursive term
+    union all
+    select n + 1 from numbers where n < 10 -- recursive condition
+)
+select * from numbers; 
+```
+This recursive cte is actually worse than generate_series(). But there are a lot of things that recursive CTEs can do that generate_series()
+can't.
+
+Note: The anchor condition can declare the col aliases as well as the type. So if the recursive condition can't use another type for that
+col. For example:
+```postgresql
+with recursive numbers as (
+    select 1 as n, 2::int
+    union all
+    select n + 1, .1 from numbers where n < 10
+)
+select * from numbers; 
+```
+ERROR: recursive query "numbers" column 2 has type integer in non-recursive term but type numeric overall.
+
+So the `recursive condition` has to match the `non-recursive term` part.
+
+EX) Generate increasing range with random steps between the rows. This is sth that generate_series() can't do. 
+```postgresql
+with recursive numbers as (
+    select 1 as n, (floor(random() * 10) + 1)::integer as rand
+    union all
+    
+    -- here, we take `rand` from row above(since it's recursive)
+    select n + 1, (rand + floor(random() * 10) + 1)::integer from numbers where n < 10
+)
+select * from numbers; 
+```
+
+Fibonacci sequence.
+
+Here, instead of putting col aliases in the non-recursive part, we put them after the name of the CTE:
+```postgresql
+-- id is just the id of the generated rows
+with recursive numbers(id, a, b) as (
+    select 1, 0, 1
+    union all
+    select id + 1, b, a+b from numbers where id < 20 -- you always want to have some cond that `terminates the recursion`
+)
+-- NOTE: BOTH of the a and b are fib sequences, but a starts 0, we chose `a`
+select id, a as fib from numbers;
+```
+
+The conditions that can **terminate** the recursion are:
+1. a `where` clause
+2. the recursive condition doesn't produce anymore rows, like we joined everything(we'll look at hierarchical examples)
+
+So recursive CTEs have 3 parts:
+- anchor condition
+- recursive condition
+- terminating condition
+
 ## 81.-Hierarchical-recursive-CTE
 ## 82.-Handling-nulls
 ## 83.-Row-value-syntax
