@@ -464,7 +464,41 @@ So recursive CTEs have 3 parts:
 - terminating condition
 
 ## 81.-Hierarchical-recursive-CTE
+Recursive CTE to traverse some hierarchical data. Like categories table where each category potentially has a parent cat that lives
+in the same table.
+
+```postgresql
+with recursive all_categories as (
+    select id, name from categories where parent_id is null -- anchor condition that generates the root nodes
+    union all
+    
+    -- here, we don't want to re-SELECT the data from all_categories, because that's represented in the rows above 
+    select categories.id, categories.name from all_categories
+        -- At this point, we have the root nodes, now we want to bring their children too. The parent_id of the children is the same as
+        -- id of their parent.
+             inner join categories on all_categories.id = categories.parent_id
+)
+select * from all_categories;
+```
+
+Now we want to generate the path through all the categories:
+
+```postgresql
+with recursive all_categories as (
+    select id, name, 1 as depth, name as path from categories where parent_id is null
+    union all
+    select categories.id, categories.name, depth + 1, concat(path, ' -> ', categories.name) from all_categories
+             inner join categories on all_categories.id = categories.parent_id
+)
+select * from all_categories;
+```
+
+The first run, will get the parent nodes. Second run, will get one `->`(one depth). Third one will get those two arrow rows and ... .
+
+![](img/81-1.png)
+
 ## 82.-Handling-nulls
+
 ## 83.-Row-value-syntax
 ## 84.-Views
 ## 85.-Materialized-views
