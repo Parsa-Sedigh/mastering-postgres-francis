@@ -318,6 +318,90 @@ from aarons;
 ```
 
 ## 79.-CTEs-with-window-functions
+For a user(each user), I wanna find n many of things, like latest, biggest, smallest ... . We did this with lateral join,
+now do it with window func + cte.
+
+Combine window func + CTE to do sth that we did with lateral join which was `3 most recent bookmarks per user`:
+```postgresql
+with ranked_bookmarks as (
+    select *,
+           row_number() over (partition by user_id order by id) as num
+    from bookmarks 
+)
+select * from ranked_bookmarks where num <= 3;
+```
+
+EX) Get first and last bookmark of each user:
+
+There are 2 solutions:
+
+First Approach:
+- to get first one: order by id, ... then use row_number() should be 1
+- to get last one: order by id desc, ... then use row_number() should be 1
+
+This requires 2 window definitions(2 `order by` of partitions).
+
+Second approach: We can use lead() and lag() to create a single window definition(which is only processed once).
+```postgresql
+-- we could use row_number() as well, but that would require 2 window definition(because of `order by` direction difference)
+select *, 
+       lag(id) over user_bookmarks is null as is_first_bookmark, -- gives first row
+       lead(id) over user_bookmarks is null as is_last_bookmark -- gives last row
+from bookmarks
+window user_bookmarks as (partition by user_id order by id);
+```
+
+NOTE about lag() and lead():
+- when we're on first row of a partition and we look back(meaning we run lag(<col>)), we get back NULL, since there's no row for that
+partition. Because we're out of current partition boundary
+- similarly, when we're on last row of a partition and we look(peak) forward using lead(<col>), we get NULL
+
+So we can use these two indicators to get first and last rows of a partition.
+
+So there is one row per partition where we have: `lag(id) over user_bookmarks is null` and it would be the first row of that partition.
+Similarly for getting the last row.
+
+The final query:
+```postgresql
+with user_bookmarks as (
+    select *,
+           lag(id) over user_bookmarks is null  as is_first_bookmark,
+           lead(id) over user_bookmarks is null as is_last_bookmark
+    from bookmarks
+    window user_bookmarks as (partition by user_id order by id)
+)
+select * from user_bookmarks where is_first_bookmark is true or is_last_bookmark is true
+```
+As you can see in the img, we have the first and last bookmark per user:
+![](img/79-1.png)
+
+Now let's do a whacky way of taking advantage of how null works to bring is_first_bookmark and is_last_bookmark to a single col, without doing
+OR in the outer part of the query.
+
+We know null is not equal to anything:
+null = 1 -> gives null
+null = null -> gives null
+
+Why? Because we're asking DB is: Is this secret thing(null) that I'm hiding equal to 1? PG: I don't know, so returns NULL.
+
+For this:
+1. one way is to `OR` the lag and lead() in our query.
+2. another way is to say(not readable though): `(lag(id) over user_bookmarks = lead(id) over user_bookmarks) is null as first_or_last`.
+So we made this into one col
+
+```postgresql
+with user_bookmarks as (
+    select *,
+           lag(id) over user_bookmarks is null  as is_first_bookmark,
+           lead(id) over user_bookmarks is null as is_last_bookmark,
+           (lag(id) over user_bookmarks = lead(id) over user_bookmarks) is null as is_first_or_last
+    from bookmarks
+    window user_bookmarks as (partition by user_id order by id)
+)
+select * from user_bookmarks where is_first_or_last is true
+limit 30;
+```
+
 ## 80.-Recursive-CTE
 ## 81.-Hierarchical-recursive-CTE
 ## 82.-Handling-nulls

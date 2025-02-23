@@ -102,7 +102,7 @@ Note that you're gonna run that subqeury once per row of preceding table.
 
 Get everyone's latest bookmark. There are a couple of ways to do this:
 - lateral join
-- CTE
+- CTE + window func
 
 ```postgresql
 select *
