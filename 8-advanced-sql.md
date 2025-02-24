@@ -604,7 +604,39 @@ This syntax expands into a bunch of different comparisons.
 ## 84.-Views
 ## 85.-Materialized-views
 ## 86.-Removing-duplicate-rows
+Window func + CTE.
 
+There are some duplicate `url`s in bookmarks.
+
+By partitioning by user_id and url, everything in a partition is duplicate. Our duplicates are anything that it's row_number() ... > 1.
+We wanna preserve one of the rows between th duplicates.
+```postgresql
+select *, row_number() over (partition by user_id, url)
+from bookmarks;
+```
+
+But we wanna narrow it down to just duplicates, instead of duplicates + the one we want to preserve.
+```postgresql
+with duplicates_identified as (select *,
+                                      row_number() over (partition by user_id, url) > 1 as is_duplicate
+                               from bookmarks),
+     duplicates as (select id
+                    from duplicates_identified
+                    where is_duplicate is true)
+delete
+from bookmarks
+where id in (select id
+             from duplicates);
+
+-- or we could do:
+-- delete
+-- from bookmarks
+-- where id in (select id
+--              from duplicates_identified
+--              where is_duplicate is true);
+```
+
+So we did this without fetching the rows into application and find the duplicates there. We did it with one query.
 
 ## 87.-Upsert
 ## 88.-Returning-keyword
