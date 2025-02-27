@@ -808,3 +808,44 @@ limit 10; -- index scan backward ...
 But you can't just flip one of them, it won't use the index: `birthday desc, created_at desc -- gets incremental sort`.
 
 ## 52.-Ordering-nulls-in-indexes
+By default NULLs are treated as larger than any other value, but we can change that both in the query and in the index construction.
+
+In thi squery, nulls would be at the beginning. If it was asc though, nulls would be last, since they're larger than all other vals.
+```postgresql
+select * From users
+order by birthday desc
+limit 10;
+```
+
+So when the order by direction is `desc`, `nulls first` is the default. So here, nulls first is redundant: `order by x desc nulls first`.
+And also here: `order by x nulls last`.
+
+```postgresql
+create index birthday_null_first on users(birthday nulls first);
+
+explain select * From users
+order by birthday nulls first
+limit 10;
+```
+```
+Limit (cost=0.42..1.16 rows=10 width=76)
+    -> Index Scan using birthday_null_first on users (cost=0.42..72992.27
+```
+Note: If we `order by birthday desc nulls last`, it will use the index in backward:
+```
+Limit (cost=0.42..1.16 rows=10 width=76)
+    -> Index Scan Backward using birthday_null_first on users (cost=0.42..7299..
+```
+
+But if we change it to `nulls last`, or sort in `desc` dir it won't use the index:
+```
+Limit (cost=27718.80..27719.96 rows=10 width=76)
+    -> Gather Merge (cost=27718.80.. 123966.65 rows=824924 width=76)
+        Workers Planned: 2
+        -> Sort (cost=26718.77..27749.93 rows=412462 width=76)
+            Sort Key: birthday
+            -> Parallel Seq Scan on users (cost=0.00..17805.62 rows=412462..
+```
+
+So if you find yourself reaching for nulls first last in a query often, you might consider creating an index that represents 
+that same exact order.
