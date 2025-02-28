@@ -52,6 +52,38 @@ So indexes that share a left-most prefix, are considered duplicate. Get rid of t
 we can use the composite or larger ones). Because the composite ones, can satisfy the single-col or smaller indexes but not vice-versa.
 
 ## 55.-Hash-indexes
+Only useful for strict equality lookups.
 
+So can't be used for range searches, ordering(sorting), wild card searches(no partial matches) or ... . Because the val that is being
+indexed, is gonna run through a hash func, so the semantic meaning of the val is lost on the other side. That's why we can't do range
+lookups and ..., because what exists in the index DS, is not the value, it's the hashed version of that val.
+
+This is similar to creating a btree index on a md5 hash of a col, except it's not a btree, it's fundamentally different DS that's optimized
+for storing these hashes.
+
+Another benefit of a hash index is the result is constant size. So we can run a massive piece of text or data through that hash func and
+it comes out as the same size, so the index structure stays quite compact.
+```postgresql
+create index email_btree on users using btree(email); -- could use the shorter syntax, since in shorter syntax btree is used(default)
+
+create index email_hash on users using hash(email);
+```
+
+Now if we run a query with `where email = `, it's gonna use the hash index instead of btree, because hash one is faster for strict
+equality lookups. But if we do range query or use `like`, it won't use the hash and will probably use the btree one.
+```postgresql
+explain
+select *
+from users
+where email = 'aaron.francis@example.com';
+```
+```
+Index Scan using email_hash on users (cost=0.00..8.02...
+    Index Cond: (email = 'aaron.francis@example.com': : te...
+```
+
+Note: Prior to postgres 10, hash indexes shouldn't be used.
+
+So when you need strict equality on potentially cols with large data, use hash index.
 
 ## 56.-Naming-indexes
