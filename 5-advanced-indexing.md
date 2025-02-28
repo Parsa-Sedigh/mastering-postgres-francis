@@ -87,3 +87,13 @@ Note: Prior to postgres 10, hash indexes shouldn't be used.
 So when you need strict equality on potentially cols with large data, use hash index.
 
 ## 56.-Naming-indexes
+Index names are not global to a db, but they are global to schema.
+
+For example: If we have two tables both having index on their email col, we can't name both indexes `email`.
+
+`tablename_column(s)_type`.
+
+Type is:
+- idx: like `users_email_idx`
+- unique
+- check
