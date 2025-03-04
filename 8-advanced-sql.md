@@ -602,7 +602,144 @@ So even though those are discrete cols, we're kinda treating them as one col.
 This syntax expands into a bunch of different comparisons.
 
 ## 84.-Views
+Similar to CTEs in that they give you organization.
+
+Unlike CTEs they are stored, so we can reference them later in other queries(unlike CTEs).
+
+With view, we give the query, a name and we can reference it again. But in materialized view, we create a table which results in
+duplicating the data.
+
+```postgresql
+create view all_users as
+(
+    select *
+    from users
+    union all
+    select *
+    from users_archive
+);
+
+select *
+from all_users;
+```
+
+One use case of view is when app code is not matched with db schema in terms of col names, and we're trying to bridge the gap as we're
+doing this multi-step migration, we can create a view and reference that view in the app code until the migration is done and go back
+to referencing the table.
+
+Note: This query shows the current schema that we're looking for objects.
+```postgresql
+show search_path; -- public
+```
+
+But we can create a new schema:
+```postgresql
+create schema views;
+
+-- with this, anytime pg comes across an unqualified obj name, it's gonna start by looking in the `views` schema BEFORE looking into the
+-- `public` schema.
+set search_path = views,public;
+```
+
+Now we wanna put the users and users_archive tables together without actually putting the data into one table. We pretend as if
+the users and users_archive were already unified. We do this by creating a view in the views schema.
+```postgresql
+create view views.users as (
+select * from public.users 
+    union all
+    select * from public.users_archive
+);
+```
+
+Now since views schema takes precedence over public schema, when we use `users` unqualified name, we get the view in views schema not the
+users table in public schema:
+```postgresql
+select * from users; -- unqualified name, pg will search in the first name in search_path, which is views not public.
+
+-- if we wanted to force pg to get the users table, not the view in views schema:
+select * from public.users; -- we gave it a qualified name
+```
+
+### Summary
+Views are used for
+- organize queries
+- clean up messy or complex data models, into a named object
+
+The underlying query always run which is great because it's gonna keep the data up to date, but it's bad if it's expensive.
+
 ## 85.-Materialized-views
+These are written to disk instead of getting to run at runtime. If you have data that's potentially **historic**, we can create a materialized view
+over it and then union it with live data which is a view(being run every time).
+
+A view is always up to date, but a materialized view can get out of sync. Maybe we don't need it to be always uptodate. Because
+we wanna run the materialized view query once a month maybe.
+
+Here, we're doing calculating sth(count(*) in this case) on historical data. Why we do this over and over again? It doesn't make sense.
+That data in the past won't change in this case. So we can do the calculation not so often. So let's create a materialized view for it.
+
+If we create a regular view for bookmarks_rollup and run explain on the SELECT query, it would do a lot of work:
+```
+Finalize GroupAggregate (cost=111949.58..112042.31 ro...
+    Group Key: bookmarks. saved_on
+    ->  Gather Merge (cost=111949.58..112034.99 rows=73...
+            Workers Planned: 2
+            -> Sort (cost=110949.56..110950.47 rows=366...
+                    Sort Key: bookmarks. saved_on
+                    -> Partial HashAggregate (cost=110930....
+                           Group Key: bookmarks. saved_on
+                           -> Parallel Seq Scan on bookmarks...
+                                Filter: (saved_on < (current_date...
+```
+
+But a materialized view will do less work, because the grouping and other works are done:
+
+```postgresql
+create materialized view bookmarks_rollup_historic as
+(
+    select saved_on, count(*)
+    from bookmarks
+    where saved_on < (current_date - interval '1' day) -- historical data where their saved_on is less than (curr - prev day)
+    group by saved_on
+);
+
+explain select * from bookmarks_rollup_historic;
+```
+
+```
+Seq scan on bookmarks_rollup_historic (cost=...)
+```
+
+Note: We can add an index to a materialized view and often times it's a good idea.
+
+### View on top of materialized view
+Let's say we wanna have up-to-date data on top of our materialized view. We want the last two days to be live.
+
+```postgresql
+create view bookmarks_rollup as (
+    select * from bookmarks_rollup_historic
+    union all
+    select saved_on, count(*)
+    from bookmarks
+    where saved_on >= (current_date - interval '1' day)
+    group by saved_on
+);
+
+select * from bookmarks_rollup;
+```
+
+Although we have a view, but it's on a materialized view where the majority of the work has already been done.
+The query that is run every time is needed to actually run every time since it's the new data that should be queries over and over again.
+But the old data is calculated using materialized view query to avoid running it again.
+
+But we need to periodically refresh the materialized view:
+```postgresql
+refresh materialized view bookmarks_rollup_historic;
+```
+
+Note: We can refresh materialized view concurrently, but there are some constraints on that like you have to have a unique index.
+The concurrent refresh won't lock the concurrent reads.
+
+
 ## 86.-Removing-duplicate-rows
 Window func + CTE.
 
