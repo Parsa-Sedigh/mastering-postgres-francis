@@ -388,7 +388,41 @@ where flower = 'poppy';
 ```
 
 ## 30.-Generated-columns
+In the process of developing your schema, business requirements will change, dbs will change probably, tight deadlines, 
+your knowledge can change. It's ok to adjust the data model.
 
+A generated col is like a formula col that calcs sth based on other cols.
+
+Traditionally, there are 2 types of these:
+- virtual
+- stored: postgres only has this
+
+These two cols shows same data in different units. Instead of trying to keep these in sync, we add GENERATED ALWAYS on one of them.
+```postgresql
+create table people (
+    height_cm numeric,
+    height_in numeric generated always as (height_cm / 2.54) stored
+);
+
+-- height_in will be calculated based on height_cm
+insert into people(height_cm) values (100);
+```
+`stored` means it's computed at insert, update and is physically written to disk
+
+We can't insert a val into generated col. So we can't insert a val there accidentally if we didn't know it's a generated col.
+
+```postgresql
+create table users(
+    email text,
+    email_domain text generated always as (split_part(email, '@', 2)) stored
+);
+```
+
+In generated cols:
+- you have to reference the curr row
+- the expression for generated col and the funcs used there, should be deterministic. So random(), current_timestamp(), random_uuid ...
+can't be used. Given an input, it must always produce the same output
+- you can't ref another generated col
 
 ## 31.-Text-search-types
 ## 32.-Bit-string
