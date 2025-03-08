@@ -388,6 +388,10 @@ where flower = 'poppy';
 ```
 
 ## 30.-Generated-columns
+Very good for papering over messy data model and data. 
+
+Great for extracting parts of data like json.
+
 In the process of developing your schema, business requirements will change, dbs will change probably, tight deadlines, 
 your knowledge can change. It's ok to adjust the data model.
 
@@ -425,10 +429,79 @@ can't be used. Given an input, it must always produce the same output
 - you can't ref another generated col
 
 ## 31.-Text-search-types
+Faceted search and highlighting results are not supported natively in pg.
+
+2 types in full text search:
+- tsvector: sorted list of distinct lexemes. It gets a chunk of text(document) and turns it into vector format which we can then use to
+search against using a different data type(tsquery).
+  - Sorted set means as you look in the example below, words in the result are sorted lexicographically.
+  - lexeme: basic(atomic) unit of language. In the example. you see `lazi` in the result instead of lazy. This is because if we were to add
+  laziness in the text, it would also get added to `lazi` in the result. So they're merged together into one single lexeme.
+- tsquery
+
+```postgresql
+select to_tsvector('the quick brown fox fox jumps over the lazy dog'); -- 1 'brown':3 'dog':9 'fox':4,5 'jump':5 'lazi':8 'quick':2
+
+select to_tsquery('lazy'); -- lazi. We get back lexemed version of word 'lazy'. So our query is actually looking for `lazi` lexeme.
+```
+
+So the way full text search works in pg, is we take the search str and turn it into a tsquery and then apply that tsquery against
+a tsvector.
+
+To do a full text search:
+```postgresql
+select to_tsvector('the quick brown fox fox jumps over the lazy dog') @@ to_tsquery('lazy'); -- TRUE
+
+select to_tsvector('the quick brown fox fox jumps over the lazy dog') @@ to_tsquery('laziness'); -- TRUE!!! Because the lexemed versions do match
+```
+So we got a bit of handling fuzziness out of the box.
+
+### keeping vectors up to date with the root document
+```postgresql
+create table ts_example
+(
+  id               bigint generated always as identity primary key,
+  content          text,    -- the raw text content
+  search_vector_en tsvector -- tsvector column for English content
+);
+```
+
+search_vector_en col is for english content.
+
+```postgresql
+-- by default in many cases, it uses 'english' as text search config. But we can change it by passing a differnet lang
+select to_tsvector('french', 'oui');
+```
+
+Since we have 2 cols for the same data, they could get out of sync.
+
+For this, you could put a trigger on this table, but a better way is to use a generated col. So a better schema is:
+```postgresql
+create table ts_example (
+    id bigint generated always as identity primary key,
+    content text,
+    search_vector_en tsvector generated always as (to_tsvector(content)) stored
+);
+```
+But we get this err: `ERROR: generation expression is not immutable.`
+
+Well we said the generated col should use a deterministic expression. Now why would the expression we used for our generated col in this case change?
+
+Because potentially you could change the default text search config. So we need to specify that explicitly:
+`generated always as (to_tsvector('english', content)) stored`
+
+Now that's a deterministic generated col.
+
+```postgresql
+insert into ts_example(content) values ('the quick brown fox fox jumps over the lazy dog');
+```
+
 ## 32.-Bit-string
 ## 33.-Ranges
 ## 34.-Composite-types
 ## 35.-Nulls
 ## 36.-Unique-constraints
+
+
 ## 37.-Exclusion-constraints
 ## 38.-Foreign-key-constraints
