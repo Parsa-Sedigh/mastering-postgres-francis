@@ -501,7 +501,123 @@ insert into ts_example(content) values ('the quick brown fox fox jumps over the 
 ## 34.-Composite-types
 ## 35.-Nulls
 ## 36.-Unique-constraints
+declaring sth as primary key does 2 things:
+1. not null
+2. unique
 
+```postgresql
+create table products
+(
+  id             bigint generated always as identity primary key,
+  product_number text unique,
+  name           text    not null,
+  price          numeric not null check ( price > 0 )
+);
+```
+
+We declared product_number col as unique, so we can't INSERT the same val more than once, but we **can** insert NULL **multiple times** 
+for product_number col which is unique! This is because NULLs are weird:
+```postgresql
+select null = null; -- null. Does this secret value equal this secret value? Who knows? It's NULL.
+```
+
+THIS MIGHT BE WHAT YOU ACTUALLY WANT. You might want to be able to insert null vals to unique col for multiple rows.
+So you might the NULLs to be considered unique which is the default behavior.
+
+But if you don't want this behavior, you have 2 opts:
+1. use `not null unique`: `product_number not null unique`. We can't insert null for that col at all.
+2. `unique nulls not distinct`. You're allowed to insert one null value, but not more than one row. Because now nulls are not distinct,
+we're treating them as equal which is an odd behavior(it's non standard behavior).
+
+Unique constraint over multiple cols:
+```postgresql
+create table sth
+(
+  id             bigint generated always as identity primary key,
+  brand          text not null,
+  product_number text not null,
+
+  unique (brand, product_number) -- Uniqueness constraint as table constraint
+);
+```
+
+```postgresql
+create table sth
+(
+  id             bigint generated always as identity primary key,
+  brand          text not null
+    constraint must_be_unique unique, -- we can give it a name as well
+  product_number text not null
+);
+```
 
 ## 37.-Exclusion-constraints
 ## 38.-Foreign-key-constraints
+These are two discrete things:
+- foreign key
+- foreign key constraint
+
+These sentences are wrong!
+- I don't use foreign keys
+- That technology doesn't support foreign keys
+
+What they actually meant is: foreign key constraints.
+
+The difference is a foreign key constraint **enforces** a referential integrity.
+
+A foreign key is a **concept**. We have a **pointer** in the child table that points to the id in the parent table.
+You don't have to have an index or constraint on either of those cols in child & parent.
+
+A foreign key constraint is a real thing(not a concept) where we say: this foreign key **must** have a reference in the parent table and if
+it doesn't, return err.
+
+Note: Name the primary keys as `id` not `tablename_id`.
+
+```postgresql
+create table states
+(
+  id   bigint generated always as identity primary key,
+  name text
+);
+
+create table cities
+(
+  id   bigint generated always as identity primary key,
+  
+  -- column-level constraint:
+  state_id bigint references states(id), -- the datatype here with the referenced parent col should match
+  name text,
+  
+  -- table-level constraint:
+  foreign key (state_id) references states(id),
+  
+  -- composite table-level constraint
+  -- NOTE: a, b cols MUST make up a unique constraint. It doesn't have to be primary key.
+  foreign key (a, b) references states(a, b)
+);
+```
+
+Why composite foreign key should be unique?
+
+Because let's say this city belongs to a state. But since the state with those referenced cols is not unique, it doesn't know
+which state we're referencing! It must be able to determine which parent row the child one belongs to.
+
+So anything we're referencing in the parent table, must be under a unique constraint(in parent table).
+
+Control what happens in child table when sth in the parent table is either updated or deleted: 
+`foreign key (a, b) references states(a, b) on delete restrict`
+
+By default, `on delete` is `no action`.
+
+`no action` vs `restrict`: `no action` allows the check to be deferred to later in a transaction whereas restrict does not allow
+that check to be deferred to later in tx. But at the end, the result is the same. You can't delete a parent row without first
+deleting the child rows that are referencing it. We can use cascade:
+`foreign key (a, b) references states(a, b) on delete cascade`.
+
+`Cascade` is useful and potentially dangerous! Because we could have cascading cascading cascade. For example a team delete their account,
+then it will delete all their projects, users, comments, attachments because of cascades in multiple tables.
+
+Potentially we could delete thousands of child rows if a parent row is deleted
+
+There is set null and set default if the foreign key is nullable or have default. So we get orphaned rows in the child table. Which we can
+clean up those rows later.
