@@ -101,7 +101,7 @@ group by e.id;
 ## 76.-Grouping-sets_-rollups_-cubes
 
 ## 77.-Window-functions
-For operating on a chunk(partition of a result set. We get to define how that chunk(partition is determined. But thee funcs, 
+For operating on a chunk(partition) of a result set. We get to define how that chunk(partition) is determined. But the funcs, 
 won't collapse the rows(unlike aggregate funcs and group by), they just add additional info.
 
 The window definition is passed to `over ()`.
@@ -115,7 +115,7 @@ select *, avg(amount) over (partition by region) from sales;
 
 NOTE:
 - If you wanna have a partition that's ordered asc by a col and another partition ordered desc by another col, you can.
-- we can also declare a **frame** which tells us **within a partition**, how far ahead and how far behind can this particular row, see.
+- **we can also declare a frame which tells us within a partition, how far ahead and how far behind can this particular row, see.**
 
 ```postgresql
 select *,
@@ -151,7 +151,7 @@ select *,
        first_value(id) over (partition by user_id order by id desc)
 from bookmarks;
 ```
-This is how to have the same partition(by user_id) in different orders.
+**This is how to have the same partition(by user_id) in different orders.**
 
 Clearly, this isn't readable and is confusing.
 
@@ -159,7 +159,7 @@ A better way to do this, is to define the frame.
 Remember that we defined the partition by user_id. We said: Chunk the rows by user_id. And then we declared a sort order inside each
 partition.
 
-Now **within** each partition, we can declare a frame. A frame defines how far ahead or how far behind pg should look within a single
+Now **within** each partition, we can declare a frame. A frame is defined for each row and it's how far ahead or how far behind pg should look within a single
 partition.
 
 There are different ways to declare a frame:
@@ -253,7 +253,7 @@ select * from all_users where email = 'sth@sth.com';
 
 We could name the cte as `users` which is the name we have as a table as well! Why would we do that?
 Maybe we have an orm, but we might need to search across regular users and users_archive at the same time. We might loose some of
-the abilities of the orm. We don't loose those abilities if we redefine the users table as a `union all` of users and users_archive.
+the abilities of the orm. We don't lose those abilities if we redefine the users table as a `union all` of users and users_archive.
 And then we let the ORM generate the query.
 
 If we run `explain (analyze, costs off)` on prev cte + query, we get:
@@ -356,7 +356,7 @@ NOTE about lag() and lead():
 partition. Because we're out of current partition boundary
 - similarly, when we're on last row of a partition and we look(peak) forward using lead(<col>), we get NULL
 
-So we can use these two indicators to get first and last rows of a partition.
+**So we can use these two indicators to get first and last rows of a partition.**
 
 So there is one row per partition where we have: `lag(id) over user_bookmarks is null` and it would be the first row of that partition.
 Similarly for getting the last row.
@@ -776,5 +776,97 @@ where id in (select id
 So we did this without fetching the rows into application and find the duplicates there. We did it with one query.
 
 ## 87.-Upsert
+Helps us with avoiding race conditions of doing a SELECT and then conditionally do sth with the data, by doing an atomic op using
+`on conflict`.
+
+```postgresql
+create table kv
+(
+    key   text primary key,
+    value text
+);
+
+-- This makes the unique constraint err that we get on primary key to go away. So the application doing the query won't get an err.
+-- This approach is much better than issuing a SELECT, getting data back and then deciding to do the INSERT or not. Because this has
+-- race condition problem. Menaing by the time we do the INSERT, the key might be there, because of some other query ran in the meantime.
+insert into kv (key, value)
+values ('cache:foo', 123)
+on conflict (key) do nothing;
+
+-- We have access to a magic obj named excluded. It holds the vals that we're trying to INSERT.
+insert into kv (key, value)
+values ('cache:foo', 456)
+on conflict (key) do update set value = excluded.value; -- the value will be updated to 456
+
+-- We also have access to the curr row's values using the table name(in this case `kv`)
+insert into kv (key, value)
+values ('cache:foo', 456)
+on conflict (key) do update set value = kv.key;
+```
+
+So in `on conflict` clause, we have access to
+- excluded keyword
+- original table
+
+### Doing upsert conditionally
+We can do this by adding constraint to the upsert clause:
+```postgresql
+insert into kv (key, value)
+values ('cache:foo', 456)
+on conflict (key) do update set value = kv.key
+where kv.value is null;
+```
+Here, the `update` for `on conflict` will only run when value is null.
+
+This is useful especially in where we're simulating a cache in DB!!! Kinda dumb but stick with it. Let's say we have a expires_at timestamp
+and we say: if the row is expired, lets overwrite it, otherwise we don't overwrite it.
+```postgresql
+create table kv
+(
+    key   text primary key,
+    value int4
+);
+
+-- We wanna incr the value by the value provided by the query(using excluded magic obj)
+insert into kv (key, value) values ('hits:homepage', 1)
+on conflict (key) do update set value = kv.value + excluded.value
+returning key, value;
+```
+
 ## 88.-Returning-keyword
+Works on INSERT, UPDATE and DELETE.
+```postgresql
+delete
+from kv
+where expires_at < now()
+returning *;
+
+insert into bookmarks(user_id, url)
+values (1, 'sth')
+returning *;
+```
+
 ## 89.-COALESCE-generated-column
+```postgresql
+create table cloudflare_videos
+(
+    id   bigint generated always as identity primary key,
+    path text
+);
+
+create table videos
+(
+    id                  bigint generated always as identity primary key,
+    title               text,
+    cloudflare_light_id bigint references cloudflare_videos (id),
+    cloudflare_dark_id  bigint references cloudflare_videos (id)
+);
+```
+
+Some videos might not have dark mode. Let's make them have one without altering the null vals of `cloudflare_dark_id`, by using
+a generated col:
+```postgresql
+-- if there's a dark vid, use it, otherwise, use the light one
+alter table videos
+    add column cloudflare_safe_dark_id bigint generated always as (coalesce(cloudflare_dark_id, cloudflare_light_id)) stored;
+```
